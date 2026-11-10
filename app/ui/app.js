@@ -112,6 +112,7 @@
   let dataRefreshTimer = 0;
   let browserRefreshTimer = 0;
   let browserPollBusy = false;
+  let resetEchoUntil = 0;
 
   // ---------- helpers ----------
 
@@ -128,6 +129,7 @@
     "approval_timeout",
     "stopped",
     "done",
+    "reset",
   ]);
 
   const ACTIVITY_ICONS = {
@@ -143,6 +145,7 @@
     approval_timeout: "⏱",
     stopped: "■",
     done: "✓",
+    reset: "🧹",
   };
 
   function escapeHtml(value) {
@@ -886,6 +889,15 @@
 
   // ---------- activity ----------
 
+  async function refreshActivity() {
+    try {
+      const data = await api("/api/activity");
+      renderActivity(data.activity);
+    } catch (_) {
+      renderActivity([]);
+    }
+  }
+
   function activityItem(item) {
     const row = document.createElement("div");
     row.className = "activity-item";
@@ -1192,6 +1204,10 @@
       showToast("The agent is already working. Stop it or wait for it to finish.");
       return;
     }
+    if (isResetCommand(text)) {
+      resetSavedData();
+      return;
+    }
     if (text.length > 8000) {
       showToast("That message is too long (maximum 8000 characters).", "bad");
       return;
@@ -1256,6 +1272,89 @@
     setText(els.chatSubtitle, defaultChatSubtitle);
     setText(els.agentActivity, "Ready");
     els.messageInput?.focus();
+  }
+
+  // ---------- /reset ----------
+
+  const RESET_COMMAND = "/reset";
+
+  function isResetCommand(text) {
+    return String(text ?? "").trim().toLowerCase() === RESET_COMMAND;
+  }
+
+  function resetSummary(summary) {
+    if (!summary) return "Saved data cleared.";
+    const parts = [
+      plural(Number(summary.courses) || 0, "course"),
+      plural(Number(summary.assignments) || 0, "assignment"),
+      plural(Number(summary.conversations) || 0, "conversation"),
+    ];
+    const files = (Number(summary.workspace_files) || 0) + (Number(summary.generated_files) || 0);
+    if (files) parts.push(plural(files, "file"));
+    return `Cleared ${parts.join(", ")}.`;
+  }
+
+  function applyLocalReset() {
+    state.conversationId = null;
+    state.conversationStarted = false;
+    state.lastAssistantEl = null;
+    state.lastUserText = "";
+    state.streamingEl = null;
+    state.streamingText = "";
+    state.pendingTools = [];
+    state.approvals.clear();
+    state.currentApprovalId = null;
+    state.files = { workspace: [], generated: [] };
+
+    hideApprovalModal();
+    renderApprovalBar();
+    renderCourses([]);
+    renderAssignments([]);
+    renderFiles();
+    renderActivity([]);
+    restoreWelcome();
+
+    setText(els.chatTitle, defaultChatTitle);
+    setText(els.chatSubtitle, defaultChatSubtitle);
+    setText(els.agentActivity, "Ready");
+    setRunning(false);
+  }
+
+  async function resetSavedData() {
+    const confirmed = window.confirm(
+      [
+        "Clear all saved Moodle data?",
+        "",
+        "This removes courses, assignments, chats, activity and workspace files.",
+        "Your Moodle login in Chrome is kept. This cannot be undone.",
+      ].join("\n")
+    );
+    if (!confirmed) {
+      showToast("Reset cancelled.");
+      els.messageInput?.focus();
+      return;
+    }
+
+    appendUser(RESET_COMMAND);
+    if (els.messageInput) {
+      els.messageInput.value = "";
+      autosize();
+    }
+    setRunning(true);
+    setText(els.agentActivity, "Clearing saved data…");
+    resetEchoUntil = Date.now() + 3000;
+
+    try {
+      const summary = await api("/api/reset", { method: "POST", body: {} });
+      applyLocalReset();
+      refreshData();
+      refreshActivity();
+      showToast(resetSummary(summary), "ok");
+    } catch (error) {
+      setRunning(false);
+      appendError(error.message);
+      setText(els.agentActivity, "Ready");
+    }
   }
 
   // ---------- SSE ----------
@@ -1416,6 +1515,16 @@
         setRunning(false);
         setText(els.agentActivity, "Stopped");
         addActivity({ kind: "stopped", level: "info", message: message || "Agent stopped", created_at: event.ts }, true);
+        break;
+      }
+
+      case "reset": {
+        applyLocalReset();
+        refreshData();
+        refreshActivity();
+        if (Date.now() >= resetEchoUntil) {
+          showToast(message || "Saved data cleared.", "ok");
+        }
         break;
       }
 

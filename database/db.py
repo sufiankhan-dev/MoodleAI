@@ -378,6 +378,40 @@ class Database:
             items.append(item)
         return items
 
+    # ---------- reset ----------
+
+    _RESET_TABLES = (
+        "messages",
+        "approvals",
+        "files",
+        "assignments",
+        "courses",
+        "conversations",
+        "activity_log",
+    )
+
+    def reset_data(self) -> dict[str, int]:
+        """Delete every row while keeping the schema in place.
+
+        Children are cleared before parents so this works with
+        ``PRAGMA foreign_keys=ON``. The autoincrement counters are reset too, so
+        a fresh session starts at id 1 again. Returns rows removed per table.
+        """
+
+        counts: dict[str, int] = {}
+        with self._lock:
+            for table in self._RESET_TABLES:
+                row = self._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
+                counts[table] = int(row["n"]) if row is not None else 0
+                self._conn.execute(f"DELETE FROM {table}")
+            try:
+                self._conn.execute("DELETE FROM sqlite_sequence")
+            except sqlite3.OperationalError:
+                # sqlite_sequence only exists once an AUTOINCREMENT row was written.
+                pass
+            self._conn.commit()
+        return counts
+
     def get_recent_messages_for_prompt(
         self, conversation_id: int, limit: int = 12
     ) -> Iterable[dict[str, Any]]:

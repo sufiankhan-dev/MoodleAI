@@ -354,6 +354,16 @@ Local data lives in:
 - `generated/` — files created without an open assignment
 - `logs/` — local logs
 
+### Reset from the chat
+
+Type `/reset` in the chat box and confirm. This clears courses, assignments,
+conversations, messages, activity, approvals and everything under `workspace/`
+and `generated/` (`.gitkeep` placeholders stay). Your saved Moodle URL and the
+Chrome login profile are kept, so you do not have to log in again.
+
+It is also available as `POST /api/reset` with the usual `X-MoodleAI: 1` header,
+and every open dashboard tab refreshes itself when a reset happens.
+
 To start completely fresh, stop the app first, then remove any of those paths.
 For example:
 

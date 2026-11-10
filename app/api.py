@@ -209,6 +209,16 @@ def create_app(injected_state: AppState | None = None) -> FastAPI:
         stopped = await state.stop_agent()
         return {"ok": stopped, "agent": state.agent_state()}
 
+    # ---------- data reset ----------
+
+    @app.post("/api/reset")
+    async def reset_data(state: AppState = Depends(get_state)) -> dict[str, Any]:
+        """Clear courses, assignments, chats, activity, approvals and files."""
+        try:
+            return state.reset_local_data()
+        except BusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/api/events")
     async def events(request: Request, state: AppState = Depends(get_state)) -> StreamingResponse:
         async def stream() -> AsyncIterator[str]:

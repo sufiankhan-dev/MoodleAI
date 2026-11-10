@@ -335,6 +335,66 @@ class AppState:
         )
         temp.replace(path)
 
+    # ---------- data reset ----------
+
+    @staticmethod
+    def _clear_tree(root: Path) -> int:
+        """Delete everything under ``root`` but keep ``.gitkeep`` placeholders.
+
+        Returns the number of files and directories removed.
+        """
+
+        if not root.exists():
+            return 0
+
+        removed = 0
+        # Deepest first: files go before the directories that hold them.
+        entries = sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True)
+        for entry in entries:
+            if entry.name == ".gitkeep":
+                continue
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    if any(entry.iterdir()):
+                        continue
+                    entry.rmdir()
+                else:
+                    entry.unlink()
+                removed += 1
+            except OSError:
+                logger.debug("Reset could not remove %s", entry, exc_info=True)
+        return removed
+
+    def reset_local_data(self) -> dict[str, Any]:
+        """Clear every locally stored record and generated file.
+
+        Courses, assignments, file records, conversations, messages, activity and
+        approvals are dropped from SQLite, and ``workspace/`` plus ``generated/``
+        are emptied. The saved Moodle URL and the Chrome login profile are kept so
+        the user does not have to log in again.
+        """
+
+        if self.active_run is not None and self._task is not None and not self._task.done():
+            raise BusyError("The agent is still working. Stop it before resetting saved data.")
+
+        self.deny_all_approvals()
+        counts = self.db.reset_data()
+        summary: dict[str, Any] = {
+            "courses": counts.get("courses", 0),
+            "assignments": counts.get("assignments", 0),
+            "files": counts.get("files", 0),
+            "conversations": counts.get("conversations", 0),
+            "messages": counts.get("messages", 0),
+            "activity": counts.get("activity_log", 0),
+            "approvals": counts.get("approvals", 0),
+            "workspace_files": self._clear_tree(self.settings.workspace_dir),
+            "generated_files": self._clear_tree(self.settings.generated_dir),
+            "login_kept": True,
+        }
+        # Logged after the wipe so the activity panel shows the reset itself.
+        self.emit("reset", "Saved data cleared", summary)
+        return {"ok": True, **summary}
+
     # ---------- read models ----------
 
     def _tree(

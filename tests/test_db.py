@@ -84,3 +84,33 @@ def test_approval_lifecycle(db: Database) -> None:
 
     db.resolve_approval("abc123", "approved")
     assert db.pending_approvals() == []
+
+
+def test_reset_data_clears_every_table(db: Database) -> None:
+    conversation_id = db.ensure_conversation(None, "hello")
+    db.add_message(conversation_id, "user", "hello")
+    course_id = db.upsert_course("Database Systems", "https://moodle.example.edu/course/view.php?id=2")
+    db.upsert_assignment(course_id, "Lab 1", "https://moodle.example.edu/mod/assign/view.php?id=7")
+    db.record_file("generated/notes.md", 10, "notes")
+    db.log_activity("info", "browser", "Opened course page")
+    db.create_approval("abc123", "run1", "overwrite_file", {"path": "x.txt"})
+
+    counts = db.reset_data()
+
+    assert counts["conversations"] == 1
+    assert counts["messages"] == 1
+    assert counts["courses"] == 1
+    assert counts["assignments"] == 1
+    assert counts["files"] == 1
+    assert counts["activity_log"] == 1
+    assert counts["approvals"] == 1
+
+    assert db.list_courses() == []
+    assert db.list_assignments() == []
+    assert db.list_files() == []
+    assert db.list_conversations() == []
+    assert db.list_activity() == []
+    assert db.pending_approvals() == []
+
+    # Ids start from 1 again, so a fresh session looks brand new.
+    assert db.create_conversation("fresh") == 1

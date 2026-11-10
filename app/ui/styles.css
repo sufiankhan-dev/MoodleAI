@@ -1219,6 +1219,23 @@ input[type="url"]:focus {
   white-space: nowrap;
 }
 
+.composer-hint {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.composer-hint code {
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--code-bg);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
 /* ---------- files & activity rail ---------- */
 
 .files-card,
@@ -1685,6 +1702,10 @@ input[type="url"]:focus {
 
   .composer-meta {
     padding: 6px 14px 10px;
+  }
+
+  .composer-hint {
+    display: none;
   }
 
   .footer {

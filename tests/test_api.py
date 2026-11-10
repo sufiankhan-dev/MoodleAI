@@ -254,6 +254,52 @@ def test_workspace_download_is_confined_to_the_jail(api) -> None:
     assert bad_root.status_code == 422
 
 
+def test_reset_endpoint_clears_data_and_keeps_login(api) -> None:
+    client, state, settings = api
+
+    course_id = state.db.upsert_course(
+        "Databases", "https://moodle.example.edu/course/view.php?id=2"
+    )
+    state.db.upsert_assignment(
+        course_id, "Lab 1", "https://moodle.example.edu/mod/assign/view.php?id=7"
+    )
+    conversation_id = state.db.create_conversation("Old chat")
+    state.db.add_message(conversation_id, "user", "hello")
+    state._moodle_url = "https://moodle.example.edu/"
+
+    folder = settings.workspace_dir / "Databases" / "Lab 1"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "notes.txt").write_text("notes", encoding="utf-8")
+    (settings.workspace_dir / ".gitkeep").write_text("", encoding="utf-8")
+
+    blocked = client.post("/api/reset", json={})
+    assert blocked.status_code == 403
+
+    response = client.post("/api/reset", json={}, headers={"X-MoodleAI": "1"})
+    assert response.status_code == 200
+    summary = response.json()
+    assert summary["ok"] is True
+    assert summary["courses"] == 1
+    assert summary["assignments"] == 1
+    assert summary["conversations"] == 1
+    assert summary["messages"] == 1
+    assert summary["workspace_files"] >= 3  # notes.txt, Lab 1, Databases
+    assert summary["login_kept"] is True
+
+    assert client.get("/api/courses").json() == {"courses": []}
+    assert client.get("/api/assignments").json() == {"assignments": []}
+    assert state.db.list_conversations() == []
+
+    # Only the reset itself is left in the activity log.
+    activity = state.db.list_activity()
+    assert [item["kind"] for item in activity] == ["reset"]
+
+    # Placeholders and the saved Moodle URL survive, so no re-login is needed.
+    assert (settings.workspace_dir / ".gitkeep").exists()
+    assert not folder.exists()
+    assert client.get("/api/state").json()["moodle_url"] == "https://moodle.example.edu/"
+
+
 def test_approval_and_conversation_errors_are_clear(api) -> None:
     client, state, _settings = api
 
