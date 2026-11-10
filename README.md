@@ -271,7 +271,9 @@ $env:RUN_OLLAMA_TESTS="1"
 python -m pytest tests/test_ollama.py -q
 ```
 
-The fast suite covers 61 tests. The optional browser suite includes:
+The fast suite covers 67 tests plus 7 skipped tests that need a real browser or
+the local model. With `RUN_BROWSER_TESTS=1` the full run is 71 tests. The
+optional browser suite includes:
 
 - visible Chrome launch, login detection, and host-policy enforcement
 - live Moodle DOM parsing for courses/assignments/assignment details
