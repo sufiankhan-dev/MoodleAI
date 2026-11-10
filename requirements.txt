@@ -1,0 +1,11 @@
+# Pinned to the versions verified on this machine (Python 3.14.3, Windows 11).
+fastapi==0.136.3
+uvicorn==0.48.0
+ollama==0.6.3
+playwright==1.60.0
+PyMuPDF==1.27.2.2
+python-docx==1.2.0
+python-dotenv==1.2.2
+httpx==0.28.1
+pydantic==2.13.4
+pytest==9.2.0

@@ -1,0 +1,26 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Local application state and private browser session
+database/*.db
+database/*.db-*
+config/app_state.json
+browser/profile/
+browser/*.lock
+logs/*.log
+logs/*.log.*
+
+# User content and generated work
+workspace/**
+!workspace/**/.gitkeep
+generated/**
+!generated/.gitkeep
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
