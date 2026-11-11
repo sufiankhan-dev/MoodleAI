@@ -218,6 +218,14 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def prune_site_course(self) -> int:
+        """Drop the Moodle site course (id 1), which is not an enrolled course."""
+
+        with self._lock:
+            cursor = self._conn.execute("DELETE FROM courses WHERE moodle_id = '1'")
+            self._conn.commit()
+            return cursor.rowcount
+
     def get_course(self, course_id: int) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(

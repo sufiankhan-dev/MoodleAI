@@ -580,6 +580,28 @@ input[type="url"]:focus {
   min-width: 0;
 }
 
+.net-auth {
+  margin-top: 10px;
+}
+
+.net-auth summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.net-auth-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.net-auth-row input {
+  flex: 1;
+  min-width: 0;
+}
+
 .state {
   display: inline-flex;
   align-items: center;

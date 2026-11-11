@@ -84,6 +84,8 @@ class BrowserSession:
         )
         self._launch_lock = asyncio.Lock()
         self._closed_by_user = False
+        self._native_auth_prompt = False
+        self._http_credentials: dict[str, str] | None = None
 
     # ---------- public state ----------
 
@@ -98,6 +100,12 @@ class BrowserSession:
     @property
     def policy(self) -> UrlPolicy:
         return self._policy
+
+    @property
+    def http_credentials(self) -> dict[str, str] | None:
+        """In-memory network credentials, if Chrome was launched with them."""
+
+        return self._http_credentials
 
     @property
     def page(self) -> Page:
@@ -134,8 +142,19 @@ class BrowserSession:
 
     # ---------- lifecycle ----------
 
-    async def start(self, url: str) -> BrowserStatus:
-        """Launch visible Chrome with the persistent profile and open ``url``."""
+    async def start(
+        self,
+        url: str,
+        *,
+        http_credentials: dict[str, str] | None = None,
+    ) -> BrowserStatus:
+        """Launch visible Chrome with the persistent profile and open ``url``.
+
+        ``http_credentials`` are optional and exist only to answer a network/HTTP
+        Basic-auth challenge (campus proxies that pop a username/password dialog
+        before the LMS loads). They are kept in memory for the lifetime of the
+        Chrome context, never logged and never written to disk.
+        """
         if self.settings.browser_headless:
             raise BrowserError(
                 "BROWSER_HEADLESS is enabled, but this agent must stay visible. "
@@ -145,13 +164,25 @@ class BrowserSession:
         validated = validate_http_url(url, allow_loopback=True)
         async with self._launch_lock:
             if self.is_running:
-                await self.navigate(validated, allow_external=False)
-                return self._status
+                if http_credentials and http_credentials != self._http_credentials:
+                    # Playwright can only set HTTP credentials at context launch.
+                    await self._hard_cleanup()
+                else:
+                    await self.navigate(validated, allow_external=False)
+                    return self._status
 
             self._closed_by_user = False
+            self._http_credentials = dict(http_credentials) if http_credentials else None
             self._set_state(BrowserState.STARTING)
             self._emit("browser", "Launching visible Chrome with the persistent profile")
             self.settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
+
+            launch_options: dict[str, object] = {}
+            if self._http_credentials:
+                launch_options["http_credentials"] = {
+                    "username": self._http_credentials["username"],
+                    "password": self._http_credentials["password"],
+                }
 
             try:
                 self._playwright = await async_playwright().start()
@@ -162,6 +193,7 @@ class BrowserSession:
                     no_viewport=True,
                     accept_downloads=True,
                     args=["--start-maximized"],
+                    **launch_options,
                 )
             except PlaywrightError as exc:
                 message = str(exc)
@@ -196,12 +228,68 @@ class BrowserSession:
                 await self.navigate(validated, allow_external=True)
             except BrowserError as exc:
                 # Browser is up even if the initial page failed; keep it visible.
-                self._status.error = str(exc)
-                self._set_state(BrowserState.UNKNOWN)
+                self._set_state(BrowserState.UNKNOWN, error=str(exc))
                 self._emit("error", str(exc))
 
             await self.refresh_status()
             return self._status
+
+    async def _enable_native_auth_prompt(self) -> bool:
+        """Best-effort: stop Playwright from cancelling HTTP auth challenges.
+
+        Playwright answers HTTP auth challenges itself and cancels them when no
+        ``httpCredentials`` are configured, surfacing as
+        ``net::ERR_INVALID_AUTH_CREDENTIALS`` instead of Chrome's dialog. Disabling
+        the Fetch domain lets some Chrome builds show the native prompt again; when
+        it does not, the dashboard asks the user for network credentials instead.
+        """
+
+        if self._native_auth_prompt:
+            return True
+        page = self._require_page()
+        try:
+            cdp = await page.context.new_cdp_session(page)
+            await cdp.send("Fetch.disable")
+        except PlaywrightError:
+            logger.debug("Could not disable auth interception", exc_info=True)
+            return False
+        self._native_auth_prompt = True
+        logger.debug("Fetch domain disabled to allow Chrome's native auth prompt")
+        return True
+
+    async def _goto_with_auth_fallback(self, url: str) -> None:
+        """Navigate, explaining a Basic-auth proxy challenge if Chrome cannot answer it."""
+
+        page = self._require_page()
+        timeout = self.settings.browser_timeout_ms
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            return
+        except PlaywrightTimeoutError:
+            raise
+        except PlaywrightError as exc:
+            if "ERR_INVALID_AUTH_CREDENTIALS" not in str(exc):
+                raise
+            # Playwright answers HTTP auth challenges itself; retry once with the
+            # Fetch domain disabled in case this Chrome build shows its own dialog.
+            if not await self._enable_native_auth_prompt():
+                raise
+
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=min(timeout, 15000))
+        except PlaywrightTimeoutError:
+            raise BrowserError(
+                "Chrome is waiting for the site credentials. Enter them in the Chrome "
+                "window, then log in to Moodle."
+            )
+        except PlaywrightError as exc:
+            if "ERR_INVALID_AUTH_CREDENTIALS" not in str(exc):
+                raise
+            raise BrowserError(
+                "This Moodle site asks for a network username and password (HTTP Basic "
+                "auth) before the page can open. Open 'Network login' in the Moodle "
+                "connection panel, enter those credentials, and click Connect again."
+            ) from exc
 
     async def navigate(self, url: str, *, allow_external: bool = False) -> BrowserStatus:
         """Navigate the visible page to a validated URL."""
@@ -219,11 +307,7 @@ class BrowserSession:
 
         self._emit("navigate", f"Navigating to {redact_url(validated)}")
         try:
-            await page.goto(
-                validated,
-                wait_until="domcontentloaded",
-                timeout=self.settings.browser_timeout_ms,
-            )
+            await self._goto_with_auth_fallback(validated)
         except PlaywrightTimeoutError as exc:
             current = page.url
             if current and current != "about:blank":
@@ -239,6 +323,7 @@ class BrowserSession:
         except PlaywrightError as exc:
             raise BrowserError(f"Browser navigation failed: {exc}") from exc
 
+        self._status.error = None
         await page.wait_for_timeout(250)
         await self.refresh_status()
         return self._status
@@ -272,7 +357,7 @@ class BrowserSession:
             self._set_state(BrowserState.LOGIN_REQUIRED, logged_in=False)
         else:
             if self._status.state not in {BrowserState.ERROR, BrowserState.STARTING}:
-                self._set_state(BrowserState.UNKNOWN)
+                self._set_state(BrowserState.UNKNOWN, error=self._status.error)
         return self._status
 
     async def _detect_login(self, page: Page) -> bool | None:
@@ -352,6 +437,8 @@ class BrowserSession:
         self._context = None
         self._page = None
         self._playwright = None
+        self._native_auth_prompt = False
+        self._http_credentials = None
         if context is not None:
             try:
                 await context.close()

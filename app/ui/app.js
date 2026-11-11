@@ -48,6 +48,8 @@
     themeBtn: $("themeBtn"),
     moodleUrl: $("moodleUrl"),
     connectBtn: $("connectBtn"),
+    httpUser: $("httpUser"),
+    httpPass: $("httpPass"),
     loginHint: $("loginHint"),
     connState: $("connState"),
     pageTitle: $("pageTitle"),
@@ -1043,7 +1045,9 @@
           break;
         case "unknown":
           hint.textContent =
+            browser.error ||
             "Chrome is open. If you are logged in, the agent will confirm it on the next read.";
+          if (browser.error) hint.classList.add("warn");
           break;
         default:
           hint.textContent =
@@ -1692,10 +1696,17 @@
 
       withLoading(els.connectBtn, async () => {
         try {
+          const httpUsername = (els.httpUser?.value || "").trim();
+          const httpPassword = els.httpPass?.value || "";
           const status = await api("/api/browser/connect", {
             method: "POST",
-            body: { url: parsed.href },
+            body: {
+              url: parsed.href,
+              http_username: httpUsername,
+              http_password: httpPassword,
+            },
           });
+          if (els.httpPass) els.httpPass.value = "";
           updateBrowser(status);
           showToast("Chrome opened. Log in to Moodle manually.");
           scheduleBrowserRefresh();

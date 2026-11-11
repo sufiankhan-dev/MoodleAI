@@ -10,6 +10,7 @@ Nothing in this module trusts page text as instructions; it is returned as data.
 
 from __future__ import annotations
 
+import html as html_lib
 import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -32,7 +33,9 @@ _SNAPSHOT_JS = r"""
   const addLink = (a, kind) => {
     const href = a.href || '';
     if (!/^https?:/i.test(href)) return;
-    const text = clean(a.innerText || a.getAttribute('aria-label') || a.title || '');
+    const text = clean(
+      a.innerText || a.textContent || a.getAttribute('aria-label') || a.title || ''
+    );
     const key = href + '|' + text;
     if (seen.has(key)) {
       const index = seen.get(key);
@@ -58,19 +61,53 @@ _SNAPSHOT_JS = r"""
 
   const courseCards = [];
   const cardSeen = new Set();
+  const codeLike = (label) => {
+    const text = clean(label);
+    if (!text || text.length > 60) return false;
+    if (!/\d/.test(text)) return false;
+    if (/[a-z]{2,}/.test(text)) return false;
+    return /^[A-Z0-9][A-Z0-9 \-_/.()]*$/.test(text);
+  };
+  const placeholder = (label) => {
+    const text = clean(label).toLowerCase();
+    return !text || text === 'course' || /^course \d+$/.test(text)
+      || text === 'open course' || text === 'view course' || text === 'more';
+  };
+  const labelFrom = (el) => clean(
+    (el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '')
+    + ' ' + (el.getAttribute('title') || '') + ' ' + (el.getAttribute('alt') || '')
+  );
   document.querySelectorAll(
     '[data-course-id], [data-courseid], .coursebox, [data-region="course-content"]'
   ).forEach(el => {
     const card = el.closest('[data-course-id], [data-courseid], .coursebox') || el;
     const id = card.getAttribute('data-course-id') || card.getAttribute('data-courseid') || '';
     const a = card.querySelector('a[href*="course/view.php"]');
-    const nameEl = card.querySelector(
-      '.coursename a, .coursename, .course-name, [data-region="course-name"], '
-      + 'h3 a, h4 a, h3, h4, img[alt]'
-    );
-    const name = clean(
-      nameEl ? (nameEl.innerText || nameEl.getAttribute('alt') || '') : ''
-    ).slice(0, 250);
+    const selectors = [
+      '.coursename a', '.coursename', '.course-name', '[data-region="course-name"]',
+      '.card-title a', '.card-title', 'h3 a', 'h4 a', 'h3', 'h4',
+      'a[href*="course/view.php"]', 'img[alt]'
+    ];
+    let name = '';
+    let fallback = '';
+    for (const selector of selectors) {
+      const node = card.querySelector(selector);
+      if (!node) continue;
+      const candidate = labelFrom(node).slice(0, 250);
+      if (!candidate) continue;
+      if (!fallback && !placeholder(candidate)) fallback = candidate;
+      if (!placeholder(candidate) && !codeLike(candidate)) { name = candidate; break; }
+    }
+    if (!name) name = fallback;
+    if (!name) {
+      // Last resort: the card's own visible text without the badge/toolbar noise.
+      const clone = card.cloneNode(true);
+      clone.querySelectorAll('.badge, .progress, .dropdown, .course-info-container .text-muted')
+        .forEach(n => n.remove());
+      const text = clean(clone.innerText || clone.textContent || '');
+      if (text) name = text.split(/\n| {2,}/)[0].slice(0, 250);
+    }
+    if (placeholder(name)) name = '';
     const href = a ? a.href : '';
     const key = (id || href) + '|' + name;
     if ((!id && !href) || cardSeen.has(key)) return;
@@ -208,6 +245,98 @@ def _course_key(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?id={course_id}"
 
 
+_CODE_LABEL = re.compile(r"[A-Z0-9][A-Z0-9 \-_/.()]*")
+_LOWERCASE_WORD = re.compile(r"[a-z]{2,}")
+_LOGIN_HEADINGS = {"log in", "login", "log in to the site", "sign in"}
+_PLACEHOLDER_NAME = re.compile(r"course \d+|course|open course|view course|more", re.IGNORECASE)
+
+
+def is_placeholder_course_name(name: str, course_id: str = "") -> bool:
+    """True for labels such as ``Course 10581`` that carry no real name."""
+
+    text = " ".join(str(name or "").split())
+    if not text:
+        return True
+    if course_id and text.lower() == f"course {course_id}".strip().lower():
+        return True
+    return bool(_PLACEHOLDER_NAME.fullmatch(text))
+
+
+def looks_like_course_code(label: str) -> bool:
+    """True for shortnames such as ``CS-3301-CS-261-BS-SE-5B``.
+
+    Moodle lists both a fullname ("Database Systems") and a shortname. A code is
+    uppercase, contains a digit, and has no lowercase words; a real name almost
+    always has lowercase words even when fully capitalised.
+    """
+
+    text = " ".join(str(label or "").split())
+    if not text or len(text) > 60:
+        return False
+    if not any(char.isdigit() for char in text):
+        return False
+    if _LOWERCASE_WORD.search(text):
+        return False
+    return bool(_CODE_LABEL.fullmatch(text))
+
+
+def _plain_text(fragment: str) -> str:
+    """Strip tags and unescape entities from a small HTML fragment."""
+
+    return " ".join(html_lib.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())
+
+
+def parse_course_display_name(html: str, *, site_title: str = "") -> str:
+    """Read the full course name from a course page's header.
+
+    Every Moodle theme renders the course fullname in the page ``<h1>`` (Boost
+    puts it in ``.page-header-headings``); older themes fall back to
+    ``<title>Course: <fullname> | <site>``. Returns ``""`` when the page is a
+    login screen or holds no usable heading.
+    """
+
+    if not html:
+        return ""
+
+    for match in re.finditer(r"<h1[^>]*>(.*?)</h1>", html, re.IGNORECASE | re.DOTALL):
+        text = _plain_text(match.group(1))
+        if text and text.lower() not in _LOGIN_HEADINGS:
+            return text[:250]
+
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if not title_match:
+        return ""
+
+    title = _plain_text(title_match.group(1))
+    if not title:
+        return ""
+    head = title.split("|")[0].strip()
+    for prefix in ("Course:", "Course -", "Unit:"):
+        if head.lower().startswith(prefix.lower()):
+            head = head[len(prefix):].strip()
+            break
+    if not head or head.lower() in _LOGIN_HEADINGS:
+        return ""
+    if site_title and head.lower() == site_title.strip().lower():
+        return ""
+    return head[:250]
+
+
+def course_name_from_heading(
+    heading: str, title: str = "", *, site_title: str = ""
+) -> str:
+    """Pick the course fullname from a page's ``<h1>`` or ``<title>`` text."""
+
+    heading = str(heading or "").strip()
+    title = str(title or "").strip()
+    if not heading and not title:
+        return ""
+    fragment = (
+        f"<h1>{html_lib.escape(heading)}</h1><title>{html_lib.escape(title)}</title>"
+    )
+    return parse_course_display_name(fragment, site_title=site_title)
+
+
 def parse_courses(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     """Extract unique courses from any Moodle page that links to courses.
 
@@ -215,9 +344,15 @@ def parse_courses(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     anchors, while card-based themes (Moove, Boost Union variants) may render
     ``[data-course-id]`` cards outside the main region, sometimes without an
     anchor at all. Both are supported.
+
+    The same course is usually listed twice (fullname and shortname, or a card
+    and its anchor), so labels are ranked: a readable name always beats a code
+    such as ``BS-1402-BS-261-BS-SE-5A``, then card labels beat loose anchors,
+    then the richer label wins.
     """
 
     courses: dict[str, dict[str, Any]] = {}
+    scores: dict[str, tuple[int, int, int]] = {}
     origin = ""
     full_url = snapshot.get("full_url", "")
     if full_url:
@@ -225,7 +360,16 @@ def parse_courses(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         if parsed_page.scheme and parsed_page.netloc:
             origin = f"{parsed_page.scheme}://{parsed_page.netloc}"
 
-    def add(href: str, name: str, fallback_id: str = "") -> None:
+    def rank(label: str, source: str, placeholder: bool) -> tuple[int, int, int]:
+        if placeholder:
+            return (0, 0, 0)
+        return (
+            1 if looks_like_course_code(label) else 2,
+            1 if source == "card" else 0,
+            len(label),
+        )
+
+    def add(href: str, name: str, fallback_id: str = "", source: str = "link") -> None:
         href = (href or "").strip()
         if href:
             parsed = urlparse(href)
@@ -238,29 +382,41 @@ def parse_courses(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             course_id = (fallback_id or "").strip()
         if not course_id:
             return
+        if course_id == "1":
+            # Moodle's site course (front page) is never an enrolled course; links
+            # to it are calendar/timeline artifacts such as "Activity event".
+            return
         if href:
             key = _course_key(href)
         else:
             key = f"{origin}/course/view.php?id={course_id}"
         cleaned = " ".join(str(name).split())
-        if not cleaned or cleaned.lower() in {"course", "open course", "view course"}:
+        placeholder_label = is_placeholder_course_name(cleaned, course_id)
+        if placeholder_label:
             cleaned = f"Course {course_id}"
-        current = courses.get(key)
-        # Prefer the longest label: image links are often empty/short.
-        if current is None or len(cleaned) > len(current["name"]):
-            courses[key] = {
-                "name": cleaned,
-                "url": key,
-                "course_id": course_id,
-            }
+        score = rank(cleaned, source, placeholder_label)
+        if key in courses and score <= scores[key]:
+            return
+        scores[key] = score
+        courses[key] = {
+            "name": cleaned,
+            "url": key,
+            "course_id": course_id,
+            "placeholder_name": placeholder_label,
+        }
 
     for link in snapshot.get("links", []):
         href = link.get("href", "")
         if "/course/view.php" in href.lower():
-            add(href, link.get("text", ""))
+            add(href, link.get("text", ""), source="link")
 
     for card in snapshot.get("course_cards", []):
-        add(card.get("href", ""), card.get("name", ""), card.get("course_id", ""))
+        add(
+            card.get("href", ""),
+            card.get("name", ""),
+            card.get("course_id", ""),
+            source="card",
+        )
 
     return sorted(courses.values(), key=lambda item: item["name"].lower())
 

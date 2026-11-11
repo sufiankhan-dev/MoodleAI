@@ -270,7 +270,12 @@ class AppState:
 
     # ---------- browser ----------
 
-    async def connect_browser(self, url: str) -> dict[str, Any]:
+    async def connect_browser(
+        self,
+        url: str,
+        *,
+        http_credentials: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         try:
             validated = validate_http_url(url, allow_loopback=True)
         except Exception as exc:
@@ -278,9 +283,12 @@ class AppState:
 
         if self.browser.is_running:
             self.browser.add_allowed_host(validated)
-            await self.browser.navigate(validated, allow_external=True)
+            if http_credentials and http_credentials != self.browser.http_credentials:
+                await self.browser.start(validated, http_credentials=http_credentials)
+            else:
+                await self.browser.navigate(validated, allow_external=True)
         else:
-            await self.browser.start(validated)
+            await self.browser.start(validated, http_credentials=http_credentials)
 
         self._moodle_url = validated
         self._save_state()

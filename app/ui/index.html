@@ -50,6 +50,15 @@
           </div>
           <p id="loginHint" class="hint">A visible Chrome window will open. Log in manually — this app never asks for or stores your password.</p>
 
+          <details class="net-auth">
+            <summary>Network login (only if Chrome asks)</summary>
+            <p class="hint">Some campuses put Moodle behind a username/password popup. These go straight to Chrome and stay in memory only.</p>
+            <div class="net-auth-row">
+              <input id="httpUser" type="text" placeholder="Username" autocomplete="off" spellcheck="false">
+              <input id="httpPass" type="password" placeholder="Password" autocomplete="off">
+            </div>
+          </details>
+
           <div class="page-card">
             <div class="page-title" id="pageTitle">No page open</div>
             <div class="page-url" id="pageUrl">—</div>

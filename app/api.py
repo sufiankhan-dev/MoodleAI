@@ -34,6 +34,11 @@ class ChatRequest(BaseModel):
 
 class ConnectRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
+    # Optional network/HTTP Basic-auth credentials (campus proxy dialogs). They are
+    # passed straight to Chrome in memory and are never stored, logged, or sent to
+    # the model.
+    http_username: str = Field(default="", max_length=200)
+    http_password: str = Field(default="", max_length=400)
 
 
 class ApprovalDecision(BaseModel):
@@ -172,8 +177,14 @@ def create_app(injected_state: AppState | None = None) -> FastAPI:
     async def browser_connect(
         payload: ConnectRequest, state: AppState = Depends(get_state)
     ) -> dict[str, Any]:
+        credentials = None
+        if payload.http_username.strip() and payload.http_password:
+            credentials = {
+                "username": payload.http_username.strip(),
+                "password": payload.http_password,
+            }
         try:
-            return await state.connect_browser(payload.url)
+            return await state.connect_browser(payload.url, http_credentials=credentials)
         except BrowserError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

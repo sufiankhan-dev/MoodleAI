@@ -6,6 +6,7 @@ JSON. Nothing here can submit, upload, delete, or change Moodle data.
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import logging
 import re
@@ -18,6 +19,9 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from app.security import redact_url
 from browser.moodle import (
+    course_name_from_heading,
+    is_placeholder_course_name,
+    looks_like_course_code,
     parse_assignment_detail,
     parse_assignments,
     parse_courses,
@@ -150,6 +154,116 @@ def _assignment_payload(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_IN_PAGE_HEADER_JS = r"""
+async (url) => {
+  try {
+    const response = await fetch(url, {credentials: 'same-origin', redirect: 'follow'});
+    if (!response.ok) return null;
+    const html = await response.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const heading = doc.querySelector('h1');
+    const title = doc.querySelector('title');
+    return {
+      heading: heading ? heading.textContent : '',
+      title: title ? title.textContent : ''
+    };
+  } catch (error) {
+    return null;
+  }
+}
+"""
+
+
+async def _read_course_header(ctx: ToolContext, url: str) -> dict[str, str] | None:
+    """Read a course page's header through Chrome's own network stack.
+
+    ``context.request`` has the cookie jar but not Chrome's proxy/auth cache, so
+    campuses that gate the LMS behind an HTTP Basic-auth proxy would reject it.
+    Fetching from inside the loaded page keeps Chrome's credentials and proxies
+    intact, and does not navigate away from the page the user is looking at.
+    """
+
+    page = ctx.browser.page
+    try:
+        info = await page.evaluate(_IN_PAGE_HEADER_JS, url)
+        if isinstance(info, dict) and (info.get("heading") or info.get("title")):
+            return info
+    except Exception:
+        logger.debug("In-page header fetch failed for %s", url, exc_info=True)
+
+    # Fallback: a short-lived tab uses the same browser and network stack.
+    tab = None
+    try:
+        tab = await page.context.new_page()
+        await tab.goto(url, wait_until="domcontentloaded", timeout=15000)
+        heading = await tab.evaluate(
+            "() => { const h = document.querySelector('h1'); return h ? h.textContent : ''; }"
+        )
+        return {"heading": heading or "", "title": await tab.title()}
+    except Exception:
+        logger.debug("Course header tab failed for %s", url, exc_info=True)
+        return None
+    finally:
+        if tab is not None:
+            try:
+                await tab.close()
+            except Exception:
+                logger.debug("Could not close the course header tab", exc_info=True)
+
+
+async def _resolve_course_names(ctx: ToolContext, courses: list[dict[str, Any]]) -> int:
+    """Replace code-like and placeholder labels with the course page's full name.
+
+    Moodle lists courses by shortname (``CS-3301-CS-261-BS-CYS-5A``) and some
+    dashboards render no label at all. The course page ``<h1>`` always carries the
+    fullname, so it is read through the visible browser (same login, same proxy
+    authentication). Lookups run in parallel so a 20+ course list still resolves.
+    """
+
+    pending = [
+        course
+        for course in courses
+        if looks_like_course_code(course.get("name", ""))
+        or is_placeholder_course_name(course.get("name", ""), course.get("course_id", ""))
+    ]
+    if not pending:
+        return 0
+
+    original = {id(course): course["name"] for course in pending}
+    page_host = urlparse(ctx.browser.page.url).hostname or ""
+    limiter = asyncio.Semaphore(6)
+
+    async def resolve(course: dict[str, Any]) -> None:
+        url = course.get("url", "")
+        host = urlparse(url).hostname or ""
+        same_site = ctx.browser.policy.permits(url) or (bool(page_host) and host == page_host)
+        if not same_site:
+            return
+        async with limiter:
+            info = await _read_course_header(ctx, url)
+        if not info:
+            return
+        name = course_name_from_heading(info.get("heading", ""), info.get("title", ""))
+        if not name or looks_like_course_code(name) or is_placeholder_course_name(name):
+            return
+        course["name"] = name
+        course["placeholder_name"] = False
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(resolve(course) for course in pending[:40])),
+            timeout=45.0,
+        )
+    except asyncio.TimeoutError:
+        logger.debug("Course-name lookup hit the time budget; keeping resolved names")
+
+    resolved = sum(1 for course in pending if course["name"] != original[id(course)])
+    if resolved:
+        courses.sort(key=lambda item: item["name"].lower())
+        ctx.log("reading", f"Read the full name of {resolved} course(s)")
+    return resolved
+
+
 async def _load_courses(ctx: ToolContext) -> list[dict[str, Any]]:
     cached = ctx.state.get("courses")
     if isinstance(cached, list) and cached:
@@ -193,6 +307,8 @@ async def _load_courses(ctx: ToolContext) -> list[dict[str, Any]]:
                 )
                 courses = parse_courses(snapshot)
             if courses:
+                await _resolve_course_names(ctx, courses)
+                ctx.db.prune_site_course()
                 for course in courses:
                     course["db_id"] = ctx.db.upsert_course(
                         course["name"], course["url"], course.get("course_id")

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from browser.moodle import parse_courses
+from browser.moodle import (
+    course_name_from_heading,
+    is_placeholder_course_name,
+    looks_like_course_code,
+    parse_course_display_name,
+    parse_courses,
+)
 
 
 def _snapshot(*, links=(), cards=(), url="https://lms.example.edu/my/"):
@@ -88,3 +94,109 @@ def test_course_path_match_is_case_insensitive() -> None:
     assert courses[0]["course_id"] == "33"
     # Normalised to the query key used for de-duplication.
     assert courses[0]["url"] == "https://lms.example.edu/Course/View.php?id=33"
+
+
+def test_full_name_beats_the_course_code_for_the_same_course() -> None:
+    # /my/courses.php lists "Course name" and "Short name" as two links to the
+    # same course; the longer label used to win, which surfaced the code.
+    snapshot = _snapshot(
+        links=[
+            ("Database Systems", "https://lms.example.edu/course/view.php?id=42", "link"),
+            ("BS-1402-BS-261-BS-SE-5A", "https://lms.example.edu/course/view.php?id=42", "link"),
+        ]
+    )
+
+    courses = parse_courses(snapshot)
+    assert len(courses) == 1
+    assert courses[0]["name"] == "Database Systems"
+
+
+def test_code_is_kept_when_it_is_the_only_label() -> None:
+    snapshot = _snapshot(
+        links=[("CS-3301-CS-261-BS-SE-5B", "https://lms.example.edu/course/view.php?id=7", "link")]
+    )
+
+    assert [c["name"] for c in parse_courses(snapshot)] == ["CS-3301-CS-261-BS-SE-5B"]
+
+
+def test_card_name_beats_a_code_link() -> None:
+    snapshot = _snapshot(
+        links=[("SE-3802L-CS-261-BS-SE-5B", "https://lms.example.edu/course/view.php?id=12", "link")],
+        cards=[{"course_id": "12", "name": "Software Engineering Lab", "href": ""}],
+    )
+
+    courses = parse_courses(snapshot)
+    assert courses[0]["name"] == "Software Engineering Lab"
+
+
+def test_course_display_name_reads_the_page_heading() -> None:
+    html = """
+    <html><head><title>Course: Database Systems | LMS</title></head>
+    <body><div class="page-header-headings"><h1 class="h2">Database Systems</h1></div></body></html>
+    """
+
+    assert parse_course_display_name(html) == "Database Systems"
+
+
+def test_course_display_name_falls_back_to_the_title() -> None:
+    html = "<html><head><title>Course: Operating Systems | DSU LMS</title></head><body></body></html>"
+
+    assert parse_course_display_name(html, site_title="DSU LMS") == "Operating Systems"
+
+
+def test_course_display_name_ignores_login_pages() -> None:
+    html = "<html><head><title>Log in to the site</title></head><body><h1>Log in to the site</h1></body></html>"
+
+    assert parse_course_display_name(html) == ""
+    assert parse_course_display_name("") == ""
+
+
+def test_course_name_from_heading_prefers_the_page_heading() -> None:
+    assert (
+        course_name_from_heading(
+            "Computer Organization & Assembly Language(BS-CYS-5A)",
+            "Course: Computer Organization & Assembly Language(BS-CYS-5A) | DSU LMS",
+        )
+        == "Computer Organization & Assembly Language(BS-CYS-5A)"
+    )
+    assert course_name_from_heading("", "Course: Operating Systems | DSU LMS") == "Operating Systems"
+    assert course_name_from_heading("Log in to the site", "Log in to the site") == ""
+
+
+def test_course_code_detection() -> None:
+    assert looks_like_course_code("BS-1402-BS-261-BS-SE-5A")
+    assert looks_like_course_code("CS 101")
+    assert not looks_like_course_code("Database Systems")
+    assert not looks_like_course_code("DATABASE SYSTEMS")
+    assert not looks_like_course_code("Lab 1 - Normalization")
+    assert not looks_like_course_code("")
+
+
+def test_placeholder_names_are_detected() -> None:
+    assert is_placeholder_course_name("")
+    assert is_placeholder_course_name("Course")
+    assert is_placeholder_course_name("Course 10581", "10581")
+    assert is_placeholder_course_name("Open course")
+    assert not is_placeholder_course_name("Database Systems", "10581")
+
+
+def test_placeholder_card_does_not_beat_a_readable_link() -> None:
+    # A card whose image has no alt text yields no name; the anchor label wins.
+    snapshot = _snapshot(
+        links=[("Database Systems", "https://lms.example.edu/course/view.php?id=42", "link")],
+        cards=[{"course_id": "42", "name": "Course 42", "href": ""}],
+    )
+
+    courses = parse_courses(snapshot)
+    assert [c["name"] for c in courses] == ["Database Systems"]
+    assert courses[0]["placeholder_name"] is False
+
+
+def test_course_without_a_label_is_reported_as_a_placeholder() -> None:
+    snapshot = _snapshot(
+        cards=[{"course_id": "10581", "name": "", "href": ""}],
+    )
+
+    courses = parse_courses(snapshot)
+    assert courses[0]["name"] == "Course 10581"
+    assert courses[0]["placeholder_name"] is True
