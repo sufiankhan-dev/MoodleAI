@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -114,3 +115,95 @@ def test_reset_data_clears_every_table(db: Database) -> None:
 
     # Ids start from 1 again, so a fresh session looks brand new.
     assert db.create_conversation("fresh") == 1
+
+
+def test_sync_overwrites_stale_status_and_keeps_workspace(db: Database) -> None:
+    course_id = db.upsert_course(
+        "Database Systems", "https://lms.example.edu/course/view.php?id=2", "2"
+    )
+    url = "https://lms.example.edu/mod/assign/view.php?id=10"
+    assignment_id = db.upsert_assignment(
+        course_id, "Normalization Exercise", url, "Due 12 Nov 2026", "Not submitted"
+    )
+    db.set_assignment_workspace(assignment_id, "Database Systems/Normalization Exercise")
+    assert db.latest_sync_at() is None
+
+    db.record_synced_assignment(
+        course_id,
+        "Normalization Exercise",
+        url,
+        due_text="Sunday, 15 November 2026, 11:59 PM",
+        due_at="2026-11-15T18:59:00+00:00",
+        status="submitted_for_grading",
+        status_text="Submitted for grading",
+    )
+
+    row = db.list_assignments()[0]
+    assert row["status"] == "submitted_for_grading"
+    assert row["status_text"] == "Submitted for grading"
+    assert row["due_at"] == "2026-11-15T18:59:00+00:00"
+    assert row["workspace_path"].endswith("Normalization Exercise")
+    assert db.latest_sync_at() is not None
+
+    # A later sync replaces the status again instead of keeping the old value.
+    same = db.record_synced_assignment(course_id, "Normalization Exercise", url, status="graded")
+    assert same == assignment_id
+    assert db.list_assignments()[0]["status"] == "graded"
+    assert len(db.list_assignments()) == 1
+
+
+def test_older_database_gains_the_sync_columns(tmp_path: Path) -> None:
+    """A database created before the sync columns existed must keep working."""
+
+    path = tmp_path / "old.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE courses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            moodle_id TEXT,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL UNIQUE,
+            last_seen_at TEXT NOT NULL
+        );
+        CREATE TABLE assignments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            course_id INTEGER REFERENCES courses(id) ON DELETE SET NULL,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL UNIQUE,
+            due_text TEXT,
+            status_text TEXT,
+            workspace_path TEXT,
+            last_opened_at TEXT,
+            created_at TEXT NOT NULL
+        );
+        INSERT INTO assignments(name, url, due_text, status_text, created_at)
+        VALUES ('Old row', 'https://lms.example.edu/mod/assign/view.php?id=1',
+                'Due 1 Nov 2026', 'Not submitted', '2026-01-01T00:00:00+00:00');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    database = Database(path)
+    try:
+        row = database.list_assignments()[0]
+        assert row["name"] == "Old row"
+        assert row["status"] == "unknown"
+        assert row["due_at"] is None
+        assert row["last_synced_at"] is None
+
+        database.record_synced_assignment(
+            None,
+            "Old row",
+            "https://lms.example.edu/mod/assign/view.php?id=1",
+            due_text="Sunday, 1 November 2026, 11:59 PM",
+            due_at="2026-11-01T18:59:00+00:00",
+            status="not_submitted",
+            status_text="Not submitted",
+        )
+        migrated = database.list_assignments()[0]
+        assert migrated["status"] == "not_submitted"
+        assert migrated["due_at"] == "2026-11-01T18:59:00+00:00"
+    finally:
+        database.close()

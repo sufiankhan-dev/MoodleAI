@@ -84,6 +84,12 @@ class Settings:
     approval_timeout_s: int
     max_agent_iterations: int
 
+    # Course/assignment sync. The dashboard mirrors submission status and due
+    # dates from Moodle; these values decide when a due date starts shouting.
+    sync_on_connect: bool
+    due_soon_hours: int
+    due_urgent_hours: int
+
     @property
     def app_dir(self) -> Path:
         return self.project_root / "app"
@@ -175,6 +181,14 @@ def load_settings() -> Settings:
     if channel not in {"chrome", "msedge", "chromium"}:
         raise ValueError("BROWSER_CHANNEL must be chrome, msedge, or chromium")
 
+    due_urgent_hours = _env_int("DUE_URGENT_HOURS", 24, 1, 720)
+    due_soon_hours = _env_int("DUE_SOON_HOURS", 48, 1, 720)
+    if due_urgent_hours > due_soon_hours:
+        raise ValueError(
+            "DUE_URGENT_HOURS must be less than or equal to DUE_SOON_HOURS, "
+            f"got {due_urgent_hours} and {due_soon_hours}"
+        )
+
     settings = Settings(
         project_root=PROJECT_ROOT,
         app_host=host,
@@ -197,6 +211,9 @@ def load_settings() -> Settings:
         max_tool_result_chars=_env_int("MAX_TOOL_RESULT_CHARS", 8000, 1000, 50000),
         approval_timeout_s=_env_int("APPROVAL_TIMEOUT_S", 300, 30, 3600),
         max_agent_iterations=_env_int("MAX_AGENT_ITERATIONS", 12, 1, 50),
+        sync_on_connect=_env_bool("SYNC_ON_CONNECT", True),
+        due_soon_hours=due_soon_hours,
+        due_urgent_hours=due_urgent_hours,
     )
     settings.ensure_directories()
     return settings

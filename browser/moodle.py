@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import html as html_lib
 import re
+from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
@@ -127,6 +128,7 @@ _SNAPSHOT_JS = r"""
     seenActivities.add(key);
     const dateEl = li.querySelector('[data-region="activity-dates"], .activity-dates, .badge');
     const statusEl = li.querySelector('.submissionstatus, .autocompletion, .badge-success, .text-success');
+    const timeEl = li.querySelector('time[datetime], [data-timestamp]');
     const classes = Array.from(li.classList).join(' ');
     const modMatch = classes.match(/modtype_([a-z]+)/);
     activities.push({
@@ -134,6 +136,9 @@ _SNAPSHOT_JS = r"""
       href,
       modtype: modMatch ? modMatch[1] : '',
       dates: clean(dateEl ? dateEl.innerText : ''),
+      datetime: timeEl
+        ? (timeEl.getAttribute('datetime') || timeEl.getAttribute('data-timestamp') || '')
+        : '',
       status: clean(statusEl ? statusEl.innerText : ''),
       classes: classes.slice(0, 200)
     });
@@ -174,6 +179,10 @@ _SNAPSHOT_JS = r"""
 
 class MoodleParseError(RuntimeError):
     """Raised when the page cannot be inspected."""
+
+
+class MoodleLoginLost(MoodleParseError):
+    """Raised when a page fetch lands on the login screen mid-sync."""
 
 
 async def take_snapshot(page: Page, *, max_chars: int = 14000) -> dict[str, Any]:
@@ -222,6 +231,7 @@ async def take_snapshot(page: Page, *, max_chars: int = 14000) -> dict[str, Any]
                 "href": str(activity.get("href", "")),
                 "modtype": str(activity.get("modtype", ""))[:30],
                 "dates": str(activity.get("dates", ""))[:300],
+                "datetime": str(activity.get("datetime", ""))[:40],
                 "status": str(activity.get("status", ""))[:200],
                 "classes": str(activity.get("classes", ""))[:200],
             }
@@ -421,11 +431,112 @@ def parse_courses(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(courses.values(), key=lambda item: item["name"].lower())
 
 
+STATUS_UNKNOWN = "unknown"
+STATUS_NOT_SUBMITTED = "not_submitted"
+STATUS_DRAFT = "draft"
+STATUS_SUBMITTED = "submitted"
+STATUS_SUBMITTED_FOR_GRADING = "submitted_for_grading"
+STATUS_GRADED = "graded"
+STATUS_NOT_REQUIRED = "no_submission_required"
+STATUS_REOPENED = "reopened"
+
+#: Statuses that should never be flagged as pending work.
+SUBMITTED_STATUSES = frozenset(
+    {STATUS_SUBMITTED, STATUS_SUBMITTED_FOR_GRADING, STATUS_GRADED, STATUS_NOT_REQUIRED}
+)
+
+#: Human labels used by the dashboard.
+STATUS_LABELS = {
+    STATUS_UNKNOWN: "Status unknown",
+    STATUS_NOT_SUBMITTED: "Not submitted",
+    STATUS_DRAFT: "Draft",
+    STATUS_SUBMITTED: "Submitted",
+    STATUS_SUBMITTED_FOR_GRADING: "Submitted for grading",
+    STATUS_GRADED: "Graded",
+    STATUS_NOT_REQUIRED: "No submission required",
+    STATUS_REOPENED: "Reopened",
+}
+
+_EPOCH = re.compile(r"\d{9,13}")
+
+
+def normalize_submission_status(text: str) -> str:
+    """Map Moodle's free-form submission status text onto a fixed vocabulary.
+
+    Moodle themes and language packs phrase this differently ("No attempt",
+    "Not submitted", "Submitted for grading"), and an empty cell means the page
+    said nothing rather than "pending". Callers get ``unknown`` in that case so
+    the dashboard can stay quiet instead of inventing a status.
+    """
+
+    lowered = " ".join(str(text or "").lower().split())
+    if not lowered:
+        return STATUS_UNKNOWN
+    if (
+        "submission not required" in lowered
+        or "no submission required" in lowered
+        or "nothing to submit" in lowered
+    ):
+        return STATUS_NOT_REQUIRED
+    if "submitted for grading" in lowered:
+        return STATUS_SUBMITTED_FOR_GRADING
+    if "draft" in lowered:
+        # Moodle shows "Draft (not submitted)" when a draft exists, which is
+        # more useful than collapsing it into plain "not submitted".
+        return STATUS_DRAFT
+    if "reopened" in lowered:
+        # A new attempt was opened after grading: the student owes a resubmission.
+        return STATUS_REOPENED
+    if (
+        "not submitted" in lowered
+        or "no attempt" in lowered
+        or "nothing submitted" in lowered
+        # Moodle's own string for a student with no submission yet
+        # (submissionstatus_ / submissionstatus_new) on the assignment index.
+        or lowered.startswith("no submission")
+    ):
+        return STATUS_NOT_SUBMITTED
+    if "graded" in lowered:
+        return STATUS_GRADED
+    if "submitted" in lowered or "submission received" in lowered:
+        return STATUS_SUBMITTED
+    return STATUS_UNKNOWN
+
+
+def parse_due_at(value: str) -> str | None:
+    """Turn Moodle's machine-readable timestamp into an ISO UTC string.
+
+    Moodle puts the real instant in ``<time datetime>`` (ISO 8601 with an
+    offset) or ``data-timestamp`` (epoch seconds). Display text such as
+    "Sunday, 15 November 2026, 11:59 PM" is deliberately *not* parsed: it is
+    rendered in the site's timezone and guessing would put the badge hours off.
+    A value without a timezone is rejected for the same reason.
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if _EPOCH.fullmatch(raw):
+        seconds = int(raw)
+        if seconds > 10**11:  # milliseconds
+            seconds //= 1000
+        try:
+            moment = datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+        return moment.isoformat(timespec="seconds")
+    text = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return None
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
 def _looks_submitted(status: str) -> bool:
-    text = status.lower()
-    if "not submitted" in text or "no attempt" in text or "nothing submitted" in text:
-        return False
-    return any(token in text for token in ("submitted", "graded", "submission received"))
+    return normalize_submission_status(status) in SUBMITTED_STATUSES
 
 
 def parse_assignments(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -438,6 +549,7 @@ def parse_assignments(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         due: str = "",
         status: str = "",
         modtype: str = "",
+        timestamp: str = "",
     ) -> None:
         if not href or "/mod/" not in href:
             return
@@ -454,7 +566,9 @@ def parse_assignments(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             "url": key,
             "activity_id": activity_id,
             "due_text": " ".join(due.split())[:300],
+            "due_at": parse_due_at(timestamp),
             "status_text": " ".join(status.split())[:200],
+            "status": normalize_submission_status(status),
             "submitted": submitted,
             "pending": not submitted,
         }
@@ -464,8 +578,11 @@ def parse_assignments(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
         else:
             if not existing["due_text"] and entry["due_text"]:
                 existing["due_text"] = entry["due_text"]
+            if not existing["due_at"] and entry["due_at"]:
+                existing["due_at"] = entry["due_at"]
             if not existing["status_text"] and entry["status_text"]:
                 existing["status_text"] = entry["status_text"]
+                existing["status"] = entry["status"]
                 existing["submitted"] = entry["submitted"]
                 existing["pending"] = entry["pending"]
             if len(entry["name"]) > len(existing["name"]):
@@ -478,6 +595,7 @@ def parse_assignments(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             activity.get("dates", ""),
             activity.get("status", ""),
             activity.get("modtype", ""),
+            activity.get("datetime", ""),
         )
 
     for link in snapshot.get("links", []):
@@ -534,3 +652,308 @@ def parse_assignment_detail(snapshot: dict[str, Any]) -> dict[str, Any]:
         "full_text": snapshot.get("text", ""),
         "headings": snapshot.get("headings", []),
     }
+
+
+def is_pending(status: str) -> bool:
+    """True when a known status still means work to do.
+
+    ``unknown`` is deliberately not pending: the dashboard says "status
+    unknown" instead of claiming the student owes something.
+    """
+
+    return status in {STATUS_NOT_SUBMITTED, STATUS_DRAFT, STATUS_REOPENED}
+
+
+_INDEX_JS = r"""
+async (url) => {
+  const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  let response;
+  try {
+    response = await fetch(url, {credentials: 'same-origin', redirect: 'follow'});
+  } catch (error) {
+    return {error: 'request_failed'};
+  }
+  if (response.url && /\/login\//i.test(response.url)) return {login: true};
+  if (!response.ok) return {error: 'http_' + response.status};
+  const html = await response.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  if ((doc.body.className || '').includes('path-login')) return {login: true};
+
+  // The per-course assignment index lists every assignment with its due date
+  // and submission status. Pick the table that actually holds assignment links.
+  let best = null;
+  doc.querySelectorAll('table').forEach((table) => {
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+    const links = table.querySelectorAll('a[href*="/mod/assign/view.php"]');
+    if (!rows.length || !links.length) return;
+    if (!best || rows.length > best.rows.length) best = {table, rows};
+  });
+  if (!best) return {headers: [], rows: []};
+
+  const headRow = best.table.querySelector('thead tr');
+  const headers = headRow
+    ? Array.from(headRow.children).map((cell) => clean(cell.textContent))
+    : [];
+  const rows = [];
+  best.rows.forEach((tr) => {
+    const anchor = tr.querySelector('a[href*="/mod/assign/view.php"]');
+    if (!anchor) return;
+    const timeEl = tr.querySelector('time[datetime], [data-timestamp]');
+    rows.push({
+      name: clean(anchor.textContent),
+      href: anchor.getAttribute('href') || '',
+      cells: Array.from(tr.children).map((cell) => clean(cell.textContent)),
+      datetime: timeEl
+        ? (timeEl.getAttribute('datetime') || timeEl.getAttribute('data-timestamp') || '')
+        : ''
+    });
+  });
+  return {headers, rows: rows.slice(0, 300)};
+}
+"""
+
+
+def _index_column(headers: list[str], *needles: str) -> int | None:
+    for index, header in enumerate(headers):
+        lowered = header.lower()
+        if any(needle in lowered for needle in needles):
+            return index
+    return None
+
+
+_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def map_assignment_index(
+    payload: dict[str, Any], *, index_url: str
+) -> list[dict[str, Any]]:
+    """Normalise the parsed assignment-index table into sync rows.
+
+    Columns are located by header text because Moodle themes and plugins add or
+    reorder them (grade, feedback, group). When a theme renders no header row,
+    the due date and status are found by looking for a date-shaped or
+    status-shaped cell instead of trusting a column position.
+    """
+
+    headers = [str(header) for header in payload.get("headers", []) if isinstance(header, str)]
+    due_index = _index_column(headers, "due")
+    status_index = _index_column(headers, "submission", "status")
+    found: dict[str, dict[str, Any]] = {}
+
+    for row in payload.get("rows", []):
+        if not isinstance(row, dict):
+            continue
+        href = str(row.get("href") or "").strip()
+        if not href:
+            continue
+        absolute = urljoin(index_url, href)
+        parsed = urlparse(absolute)
+        if "/mod/assign/view.php" not in parsed.path.lower():
+            continue
+        activity_id = parse_qs(parsed.query).get("id", [""])[0]
+        key = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?id={activity_id}"
+
+        cells = [str(cell) for cell in row.get("cells", []) if isinstance(cell, str)]
+        due_text = ""
+        if due_index is not None and due_index < len(cells):
+            due_text = cells[due_index]
+        if not due_text:
+            due_text = next((cell for cell in cells if _YEAR.search(cell)), "")
+
+        status_text = ""
+        if status_index is not None and status_index < len(cells):
+            status_text = cells[status_index]
+        if not status_text:
+            status_text = next(
+                (
+                    cell
+                    for cell in cells
+                    if normalize_submission_status(cell) != STATUS_UNKNOWN
+                ),
+                "",
+            )
+
+        status = normalize_submission_status(status_text)
+        name = " ".join(str(row.get("name") or "").split()) or f"Assignment {activity_id}"
+        found[key] = {
+            "name": name[:250],
+            "url": key,
+            "activity_id": activity_id,
+            "due_text": " ".join(due_text.split())[:300],
+            "due_at": parse_due_at(str(row.get("datetime") or "")),
+            "status_text": " ".join(status_text.split())[:200],
+            "status": status,
+            "submitted": status in SUBMITTED_STATUSES,
+            "pending": is_pending(status),
+        }
+
+    return sorted(found.values(), key=lambda item: item["name"].lower())
+
+
+async def fetch_assignment_index(page: Page, url: str) -> dict[str, Any]:
+    """Read a course's assignment index through the logged-in page.
+
+    The request goes through Chrome's own network stack (same cookies, same
+    proxy/Basic-auth cache) and never navigates, so the user's visible tab stays
+    where it is. Only ``/mod/assign/index.php`` is ever fetched.
+    """
+
+    try:
+        raw = await page.evaluate(_INDEX_JS, url)
+    except PlaywrightTimeoutError as exc:
+        raise MoodleParseError("The assignment list did not load in time.") from exc
+    except Exception as exc:  # Playwright's Error hierarchy differs by version
+        raise MoodleParseError(f"Could not read the assignment list: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise MoodleParseError("Unexpected assignment list result.")
+    if raw.get("login"):
+        raise MoodleLoginLost(
+            "Moodle asked you to log in again. Finish logging in manually in Chrome."
+        )
+    if raw.get("error"):
+        raise MoodleParseError(
+            "The assignment list could not be read "
+            f"({raw.get('error')}). That course may open its assignments differently."
+        )
+    return raw
+
+
+# The Timeline block's own data source. Only this one read-only web service is
+# ever called; the method name is fixed here and never comes from the model.
+ACTION_EVENTS_METHOD = "core_calendar_get_action_events_by_timesort"
+
+_ACTION_EVENTS_JS = r"""
+async ({origin, method, timesortfrom, limit, pages}) => {
+  // The session key is read and used inside the page only. It is never
+  // returned to Python, so it cannot reach logs, events, or the database.
+  let sesskey = (window.M && M.cfg && M.cfg.sesskey) || '';
+  if (!sesskey) {
+    try {
+      const home = await fetch(origin + '/my/', {credentials: 'same-origin'});
+      if (home.url && /\/login\//i.test(home.url)) return {login: true};
+      const match = (await home.text()).match(/"sesskey":"([A-Za-z0-9]+)"/);
+      sesskey = match ? match[1] : '';
+    } catch (error) {
+      return {error: 'sesskey_unavailable'};
+    }
+  }
+  if (!sesskey) return {error: 'sesskey_unavailable'};
+
+  const endpoint = origin + '/lib/ajax/service.php?sesskey=' +
+    encodeURIComponent(sesskey) + '&info=' + encodeURIComponent(method);
+  const events = [];
+  let after = 0;
+  for (let page = 0; page < pages; page++) {
+    const args = {timesortfrom, limitnum: limit, limittononsuspendedevents: true};
+    if (after) args.aftereventid = after;
+    let body;
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify([{index: 0, methodname: method, args}])
+      });
+      if (response.url && /\/login\//i.test(response.url)) return {login: true};
+      if (!response.ok) return {error: 'http_' + response.status};
+      body = await response.json();
+    } catch (error) {
+      return {error: 'request_failed'};
+    }
+    const first = Array.isArray(body) ? body[0] : null;
+    if (!first || first.error) {
+      const code = first && first.exception ? String(first.exception.errorcode || '') : '';
+      if (/login|sesskey/i.test(code)) return {login: true};
+      return {error: 'service_' + (code || 'error').slice(0, 40)};
+    }
+    const batch = (first.data && first.data.events) || [];
+    batch.forEach((event) => events.push({
+      modulename: String(event.modulename || ''),
+      eventtype: String(event.eventtype || ''),
+      url: String(event.url || ''),
+      timesort: Number(event.timesort || event.timestart || 0),
+      name: String(event.name || '').slice(0, 250)
+    }));
+    if (batch.length < limit) break;
+    after = Number(first.data.lastid || 0);
+    if (!after) break;
+  }
+  return {events};
+}
+"""
+
+
+def map_action_events(payload: dict[str, Any], *, origin: str) -> dict[str, str]:
+    """Map assignment URL (same key as the index rows) to its ISO UTC due instant.
+
+    ``timesort`` is epoch seconds, so the badge needs no timezone guessing.
+    Teacher-side ``gradingdue`` events and other modules are ignored.
+    """
+
+    deadlines: dict[str, str] = {}
+    for event in payload.get("events", []):
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("modulename") or "") != "assign":
+            continue
+        if str(event.get("eventtype") or "due") != "due":
+            continue
+        absolute = urljoin(origin + "/", str(event.get("url") or ""))
+        parsed = urlparse(absolute)
+        if "/mod/assign/view.php" not in parsed.path.lower():
+            continue
+        activity_id = parse_qs(parsed.query).get("id", [""])[0]
+        if not activity_id:
+            continue
+        due_at = parse_due_at(str(int(event.get("timesort") or 0)))
+        if due_at is None:
+            continue
+        key = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?id={activity_id}"
+        # Keep the earliest instant if Moodle reports more than one.
+        if key not in deadlines or due_at < deadlines[key]:
+            deadlines[key] = due_at
+    return deadlines
+
+
+async def fetch_assign_deadlines(
+    page: Page,
+    origin: str,
+    *,
+    lookback_days: int = 30,
+    limit: int = 50,
+    pages: int = 6,
+) -> dict[str, str]:
+    """Read upcoming and recently overdue assignment deadlines from Moodle.
+
+    Uses the same calendar action events the Timeline block shows. Moodle only
+    lists work still to act on, so submitted assignments are usually absent;
+    their badge does not matter because they are no longer pending.
+    """
+
+    timesortfrom = int(datetime.now(timezone.utc).timestamp()) - lookback_days * 86400
+    try:
+        raw = await page.evaluate(
+            _ACTION_EVENTS_JS,
+            {
+                "origin": origin,
+                "method": ACTION_EVENTS_METHOD,
+                "timesortfrom": timesortfrom,
+                "limit": limit,
+                "pages": pages,
+            },
+        )
+    except PlaywrightTimeoutError as exc:
+        raise MoodleParseError("Moodle's deadline list did not load in time.") from exc
+    except Exception as exc:  # Playwright's Error hierarchy differs by version
+        raise MoodleParseError(f"Could not read Moodle's deadline list: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise MoodleParseError("Unexpected deadline list result.")
+    if raw.get("login"):
+        raise MoodleLoginLost(
+            "Moodle asked you to log in again. Finish logging in manually in Chrome."
+        )
+    if raw.get("error"):
+        raise MoodleParseError(
+            f"Moodle's deadline list is unavailable ({raw.get('error')})."
+        )
+    return map_action_events(raw, origin=origin)

@@ -64,8 +64,10 @@
             <div class="page-url" id="pageUrl">—</div>
             <div class="page-actions">
               <button id="checkLoginBtn" class="btn btn-ghost small" type="button">Check login</button>
+              <button id="syncBtn" class="btn btn-ghost small" type="button" title="Read courses, statuses, and due dates from Moodle">Sync</button>
               <button id="disconnectBtn" class="btn btn-ghost small" type="button">Disconnect</button>
             </div>
+            <p id="syncState" class="hint">Not synced yet</p>
           </div>
         </section>
 
@@ -75,7 +77,7 @@
             <button class="icon-btn" id="refreshCourses" type="button" aria-label="Refresh courses" title="Refresh">↻</button>
           </div>
           <div id="courseList" class="list">
-            <p class="empty">Ask the agent to “list my courses”.</p>
+            <p class="empty">Connect to Moodle and log in to sync your courses.</p>
           </div>
         </section>
 
@@ -105,8 +107,6 @@
             <h2>Your Moodle, with a local brain.</h2>
             <p>I can open your courses in a visible Chrome window, read assignments, explain them, and prepare files. Everything runs on your laptop.</p>
             <div class="suggestions">
-              <button class="suggestion" type="button" data-prompt="List my courses">List my courses</button>
-              <button class="suggestion" type="button" data-prompt="Show me all pending assignments">Show pending assignments</button>
               <button class="suggestion" type="button" data-prompt="Open my Database Systems course">Open Database Systems</button>
               <button class="suggestion" type="button" data-prompt="Explain my latest assignment in simple language">Explain an assignment</button>
             </div>

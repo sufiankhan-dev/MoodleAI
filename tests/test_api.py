@@ -152,6 +152,7 @@ def test_state_and_tools_expose_only_implemented_capabilities(api) -> None:
         "agent",
         "courses",
         "assignments",
+        "sync",
         "tools",
         "activity",
         "files",
@@ -178,6 +179,22 @@ def test_mutating_requests_require_local_header(api) -> None:
     allowed = client.post("/api/agent/stop", json={}, headers={"X-MoodleAI": "1"})
     assert allowed.status_code == 200
     assert allowed.json()["ok"] is False
+
+
+def test_sync_endpoint_asks_for_a_connection_instead_of_failing_silently(api) -> None:
+    client, state, _settings = api
+
+    blocked = client.post("/api/sync", json={})
+    assert blocked.status_code == 403
+
+    offline = client.post("/api/sync", json={}, headers={"X-MoodleAI": "1"})
+    assert offline.status_code == 400
+    assert "connect" in offline.json()["detail"].lower()
+    assert state.sync_state()["running"] is False
+
+    snapshot = client.get("/api/state").json()
+    assert snapshot["sync"]["enabled"] is True
+    assert snapshot["sync"]["last_synced_at"] is None
 
 
 def test_non_local_host_and_origin_are_rejected(api) -> None:

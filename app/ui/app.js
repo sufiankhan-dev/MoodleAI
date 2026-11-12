@@ -55,6 +55,8 @@
     pageTitle: $("pageTitle"),
     pageUrl: $("pageUrl"),
     checkLoginBtn: $("checkLoginBtn"),
+    syncBtn: $("syncBtn"),
+    syncState: $("syncState"),
     disconnectBtn: $("disconnectBtn"),
     refreshCourses: $("refreshCourses"),
     refreshAssignments: $("refreshAssignments"),
@@ -677,6 +679,70 @@
     return button;
   }
 
+  const STATUS_STYLES = {
+    graded: "chip chip-ok",
+    submitted: "chip chip-ok",
+    submitted_for_grading: "chip chip-ok",
+    no_submission_required: "chip",
+    draft: "chip chip-warn",
+    reopened: "chip chip-warn",
+    not_submitted: "chip",
+    unknown: "chip",
+  };
+
+  const URGENCY_RANK = { overdue: 0, urgent: 1, soon: 2, upcoming: 3, no_due_date: 4 };
+
+  function hoursLabel(hours) {
+    if (hours === null || hours === undefined) return "";
+    const value = Number(hours);
+    if (!Number.isFinite(value)) return "";
+    const magnitude = Math.abs(value);
+    if (magnitude < 1) return "under an hour";
+    if (magnitude < 48) return `${Math.round(magnitude)}h`;
+    return `${Math.round(magnitude / 24)}d`;
+  }
+
+  // The badge is built from the backend's urgency, never from Date parsing the
+  // Moodle display text: the stored instant is the only trustworthy input.
+  function dueBadge(assignment) {
+    const urgency = assignment.urgency || "no_due_date";
+    const relative = hoursLabel(assignment.due_in_hours);
+    let className = "chip";
+    let label = "";
+
+    if (urgency === "overdue") {
+      className = "chip chip-danger";
+      label = relative ? `Overdue by ${relative}` : "Overdue";
+    } else if (urgency === "urgent") {
+      className = "chip chip-danger";
+      label = relative ? `Due in ${relative}` : "Due soon";
+    } else if (urgency === "soon") {
+      className = "chip chip-warn";
+      label = relative ? `Due in ${relative}` : "Due soon";
+    } else if (assignment.due_text) {
+      label = truncate(assignment.due_text, 40);
+    }
+
+    if (!label) return null;
+    const chip = document.createElement("span");
+    chip.className = className;
+    chip.textContent = label;
+    chip.title = assignment.due_text ? `Due: ${assignment.due_text}` : label;
+    return chip;
+  }
+
+  function statusBadge(assignment) {
+    const status = assignment.status || "unknown";
+    const chip = document.createElement("span");
+    chip.className = STATUS_STYLES[status] || "chip";
+    chip.textContent = truncate(
+      assignment.status_label || assignment.status_text || "Status unknown",
+      40
+    );
+    chip.title = assignment.status_text || chip.textContent;
+    return chip;
+  }
+
   function assignmentItem(assignment) {
     const button = document.createElement("button");
     button.type = "button";
@@ -696,7 +762,7 @@
     body.appendChild(name);
 
     const sub = document.createElement("span");
-    sub.className = "sub";
+    sub.className = "sub sub-chips";
 
     if (assignment.course_name) {
       const course = document.createElement("span");
@@ -704,28 +770,12 @@
       sub.appendChild(course);
     }
 
-    if (assignment.due_text) {
-      const due = document.createElement("span");
-      due.className = "chip chip-warn";
-      due.textContent = truncate(assignment.due_text, 60);
-      due.title = assignment.due_text;
-      sub.appendChild(due);
+    if (assignment.due_text || assignment.urgency) {
+      const due = dueBadge(assignment);
+      if (due) sub.appendChild(due);
     }
 
-    if (assignment.status_text) {
-      const status = document.createElement("span");
-      status.className = assignment.pending ? "chip" : "chip chip-ok";
-      status.textContent = truncate(assignment.status_text, 50);
-      status.title = assignment.status_text;
-      sub.appendChild(status);
-    }
-
-    if (!sub.childNodes.length) {
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.textContent = assignment.pending ? "Pending" : "Seen";
-      sub.appendChild(chip);
-    }
+    sub.appendChild(statusBadge(assignment));
 
     body.appendChild(sub);
     button.appendChild(glyph);
@@ -744,7 +794,7 @@
     if (!Array.isArray(courses) || !courses.length) {
       const empty = document.createElement("p");
       empty.className = "empty";
-      empty.textContent = "No courses saved yet. Ask the agent to “list my courses”.";
+      empty.textContent = "No courses yet. Connect to Moodle and log in to sync them.";
       els.courseList.appendChild(empty);
       return;
     }
@@ -763,7 +813,17 @@
       return;
     }
 
-    rows.sort((a, b) => Number(Boolean(b.pending)) - Number(Boolean(a.pending)));
+    rows.sort((a, b) => {
+      const pendingDelta = Number(!a.pending) - Number(!b.pending);
+      if (pendingDelta) return pendingDelta;
+      const rankA = URGENCY_RANK[a.urgency] ?? 9;
+      const rankB = URGENCY_RANK[b.urgency] ?? 9;
+      if (rankA !== rankB) return rankA - rankB;
+      const hoursA = a.due_in_hours === null || a.due_in_hours === undefined ? 1e9 : Number(a.due_in_hours);
+      const hoursB = b.due_in_hours === null || b.due_in_hours === undefined ? 1e9 : Number(b.due_in_hours);
+      if (hoursA !== hoursB) return hoursA - hoursB;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
     rows.slice(0, 60).forEach((row) => {
       els.assignmentList.appendChild(assignmentItem(row));
     });
@@ -774,6 +834,24 @@
       empty.textContent = "No pending assignments in the saved data.";
       els.assignmentList.appendChild(empty);
     }
+  }
+
+  function renderSync(info) {
+    if (!els.syncState) return;
+    if (!info) {
+      setText(els.syncState, "Not synced yet");
+      return;
+    }
+    if (info.step && info.total) {
+      setText(els.syncState, `Reading ${info.course || "course"} (${info.step}/${info.total})`);
+      return;
+    }
+    const message = info.message || (info.running ? "Syncing…" : "Not synced yet");
+    setText(els.syncState, message);
+    els.syncState.title = (info.errors && info.errors.length ? info.errors.join("\n") : message) || "";
+    els.syncState.classList.toggle("bad", info.state === "failed");
+    els.syncState.classList.toggle("ok", info.state === "done");
+    els.syncState.classList.toggle("warn", info.state === "running");
   }
 
   // ---------- files ----------
@@ -1371,6 +1449,7 @@
       case "snapshot": {
         if (data) {
           updateBrowser(data.browser);
+          renderSync(data.sync);
           if (data.moodle_url) {
             state.moodleUrl = data.moodle_url;
             if (!els.moodleUrl.value) els.moodleUrl.value = data.moodle_url;
@@ -1476,6 +1555,28 @@
       case "browser": {
         scheduleBrowserRefresh();
         addActivity({ kind: "browser", level: "info", message, created_at: event.ts }, true);
+        break;
+      }
+
+      case "sync": {
+        renderSync(data);
+        addActivity({ kind: "sync", level: "info", message, created_at: event.ts }, true);
+        break;
+      }
+
+      case "sync_done": {
+        renderSync(data?.sync || data);
+        addActivity(
+          {
+            kind: "sync",
+            level: data?.ok === false ? "error" : "info",
+            message,
+            created_at: event.ts,
+          },
+          true
+        );
+        scheduleDataRefresh();
+        showToast(message, data?.ok === false ? "bad" : "ok");
         break;
       }
 
@@ -1588,6 +1689,7 @@
       const snapshot = await api("/api/state");
       updateOllama(snapshot.ollama);
       updateBrowser(snapshot.browser);
+      renderSync(snapshot.sync);
       renderCourses(snapshot.courses);
       renderAssignments(snapshot.assignments);
       renderFiles(snapshot.files || state.files);
@@ -1743,6 +1845,18 @@
           else if (status.logged_in === false) {
             showToast("Still waiting for login in Chrome.", "bad");
           } else showToast("Login state is unclear — try opening a course.");
+        } catch (error) {
+          showToast(error.message, "bad");
+        }
+      });
+    });
+
+    els.syncBtn?.addEventListener("click", () => {
+      withLoading(els.syncBtn, async () => {
+        try {
+          const result = await api("/api/sync", { method: "POST", body: {} });
+          renderSync(result.sync);
+          showToast(result.started ? "Reading Moodle…" : "A sync is already running.");
         } catch (error) {
           showToast(error.message, "bad");
         }

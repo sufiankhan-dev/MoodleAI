@@ -16,6 +16,7 @@ from app.config import Settings, load_settings
 from app.events import EventBus
 from app.logging_setup import configure_logging
 from app.security import PathJail, redact_url, validate_http_url
+from app.sync import URGENCY_RANK, assignment_view, sync_courses
 from browser.session import BrowserError, BrowserSession
 from database.db import Database
 from tools import build_registry
@@ -93,6 +94,16 @@ class AppState:
         self.approval_meta: dict[str, dict[str, Any]] = {}
         self._task: asyncio.Task[Any] | None = None
         self._force_stop_task: asyncio.Task[Any] | None = None
+        self._sync_task: asyncio.Task[Any] | None = None
+        self._sync_info: dict[str, Any] = {
+            "state": "idle",
+            "trigger": None,
+            "message": "Not synced yet",
+            "started_at": None,
+            "finished_at": None,
+            "summary": None,
+        }
+        self._auto_sync_done = False
         self._agent_status = "idle"
         self._moodle_url = settings.moodle_url or self._load_saved_url()
         self._started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -292,10 +303,15 @@ class AppState:
 
         self._moodle_url = validated
         self._save_state()
+        self._auto_sync_done = False
         self.emit("browser", "Moodle opened in visible Chrome", {"url": redact_url(validated)})
-        return await self.browser_status(refresh=False)
+        status = await self.browser_status(refresh=False)
+        self._maybe_auto_sync(status)
+        return status
 
     async def disconnect_browser(self) -> None:
+        await self._cancel_sync()
+        self._auto_sync_done = False
         await self.browser.close()
 
     async def browser_status(self, *, refresh: bool = True) -> dict[str, Any]:
@@ -313,7 +329,125 @@ class AppState:
                 status["page"] = None
         else:
             status["page"] = None
+        self._maybe_auto_sync(status)
         return status
+
+    # ---------- course & assignment sync ----------
+
+    def sync_state(self) -> dict[str, Any]:
+        return {
+            **self._sync_info,
+            "running": bool(self._sync_task is not None and not self._sync_task.done()),
+            "enabled": self.settings.sync_on_connect,
+            "last_synced_at": self.db.latest_sync_at(),
+        }
+
+    def _maybe_auto_sync(self, status: dict[str, Any]) -> None:
+        """Start one sync per connection, as soon as Moodle reports a login.
+
+        The user always logs in manually in Chrome, so the first status poll
+        after login is the earliest honest moment to read their courses.
+        """
+
+        if not self.settings.sync_on_connect or self._auto_sync_done:
+            return
+        if status.get("logged_in") is not True:
+            return
+        try:
+            started = self.start_sync("login")["started"]
+        except (BusyError, ValueError):
+            return
+        if started:
+            self._auto_sync_done = True
+
+    def start_sync(self, trigger: str = "manual") -> dict[str, Any]:
+        """Begin a sync in the background and return its current state."""
+
+        if self.active_run is not None and self._task is not None and not self._task.done():
+            raise BusyError(
+                "The agent is talking to Moodle right now. Stop it or wait before syncing."
+            )
+        if self._sync_task is not None and not self._sync_task.done():
+            return {"started": False, "sync": self.sync_state()}
+        if not self.browser.is_running:
+            raise ValueError("Chrome is not connected. Connect to Moodle and log in first.")
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self._sync_info.update(
+            {
+                "state": "running",
+                "trigger": trigger,
+                "message": "Reading your Moodle courses…",
+                "started_at": now,
+                "finished_at": None,
+            }
+        )
+        self._sync_task = asyncio.create_task(self._run_sync())
+        self.emit("sync", self._sync_info["message"], self.sync_state())
+        return {"started": True, "sync": self.sync_state()}
+
+    async def _run_sync(self) -> None:
+        try:
+            summary = await sync_courses(
+                browser=self.browser,
+                db=self.db,
+                settings=self.settings,
+                jail=self.jail,
+                emit=self.emit,
+                should_stop=lambda: not self.browser.is_running,
+            )
+        except asyncio.CancelledError:
+            self._sync_info.update(
+                {
+                    "state": "idle",
+                    "message": "Sync cancelled",
+                    "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "summary": None,
+                }
+            )
+            raise
+        except Exception as exc:
+            logger.exception("Moodle sync failed")
+            self._sync_info.update(
+                {
+                    "state": "failed",
+                    "message": f"Sync failed: {exc}",
+                    "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                }
+            )
+            self.emit("sync_done", self._sync_info["message"], {"ok": False, "sync": self.sync_state()})
+            return
+
+        courses = summary.get("courses", 0)
+        assignments = summary.get("assignments", 0)
+        pending = summary.get("pending", 0)
+        errors = summary.get("errors") or []
+        message = (
+            f"Synced {courses} course(s), {assignments} assignment(s), {pending} pending"
+            if summary.get("ok")
+            else (errors[0] if errors else "Sync found no courses")
+        )
+        if summary.get("ok") and errors:
+            message += f" · {len(errors)} course(s) could not be read"
+        if summary.get("ok") and summary.get("notes"):
+            message += " · due-date alerts limited (Moodle calendar unavailable)"
+
+        self._sync_info.update(
+            {
+                "state": "done" if summary.get("ok") else "failed",
+                "message": message,
+                "finished_at": summary.get("finished_at"),
+                "summary": summary,
+            }
+        )
+        self.emit("sync_done", message, {"ok": bool(summary.get("ok")), "sync": self.sync_state()})
+
+    async def _cancel_sync(self) -> None:
+        task = self._sync_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     # ---------- state persistence ----------
 
@@ -472,15 +606,22 @@ class AppState:
         return path
 
     def assignment_rows(self) -> list[dict[str, Any]]:
-        rows = self.db.list_assignments()
-        for row in rows:
-            status_text = (row.get("status_text") or "").lower()
-            submitted = (
-                any(token in status_text for token in ("submitted", "graded"))
-                and "not submitted" not in status_text
-                and "no attempt" not in status_text
+        rows = [
+            assignment_view(
+                row,
+                soon_hours=self.settings.due_soon_hours,
+                urgent_hours=self.settings.due_urgent_hours,
             )
-            row["pending"] = not submitted
+            for row in self.db.list_assignments()
+        ]
+        rows.sort(
+            key=lambda row: (
+                0 if row.get("pending") else 1,
+                URGENCY_RANK.get(str(row.get("urgency") or ""), 9),
+                row["due_in_hours"] if isinstance(row.get("due_in_hours"), (int, float)) else 1e9,
+                str(row.get("name") or "").lower(),
+            )
+        )
         return rows
 
     def conversation_messages(self, conversation_id: int) -> list[dict[str, Any]]:
@@ -505,6 +646,7 @@ class AppState:
             "agent": self.agent_state(),
             "courses": self.db.list_courses(),
             "assignments": self.assignment_rows(),
+            "sync": self.sync_state(),
             "tools": self.tool_list(),
             "activity": self.db.list_activity(150),
             "conversations": self.db.list_conversations(20),
@@ -519,6 +661,7 @@ class AppState:
             "agent": self.agent_state(),
             "approvals": self.pending_approvals(),
             "moodle_url": self._moodle_url or "",
+            "sync": self.sync_state(),
         }
 
     # ---------- shutdown ----------
@@ -528,6 +671,7 @@ class AppState:
             if self.active_run is not None:
                 self.active_run.request_stop()
             self.deny_all_approvals()
+            await self._cancel_sync()
             task = self._task
             if task is not None and not task.done():
                 task.cancel()

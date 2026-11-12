@@ -66,7 +66,9 @@ Next.js dashboard while shaving a whole toolchain off the install.
    `browser/profile`.
 4. Log in manually (including SSO/MFA). MoodleAI never sees, types, or stores your
    Moodle account password.
-5. Click **Check login** once the Moodle dashboard is visible.
+5. Click **Check login** once the Moodle dashboard is visible. The first status
+   check that sees you logged in starts a **sync** on its own: every course is
+   read, and each assignment's submission status and due date are stored.
 6. Ask in the chat, for example:
    - “List my courses”
    - “Show my pending assignments”
@@ -77,6 +79,33 @@ Next.js dashboard while shaving a whole toolchain off the install.
 The dashboard shows the current page, saved courses, pending assignments, the
 agent's activity, local files, and any action that needs your approval.
 
+### Assignment sync
+
+The sync reads `mod/assign/index.php` for each of your courses through Chrome's
+own session (same cookies, same network auth) and stores what Moodle reports:
+
+- **Submission status** — `Not submitted`, `Draft`, `Submitted`,
+  `Submitted for grading`, `Graded`, `Reopened`, or `No submission required`
+  (Moodle's own “No submission” counts as not submitted). A blank cell is
+  recorded as *status unknown* rather than guessed as pending; a phrase the app
+  does not recognise (another theme or language pack) is shown verbatim.
+- **Due date** — the exact instant comes from Moodle's calendar, the same
+  deadline list the Timeline block shows (the read-only web service
+  `core_calendar_get_action_events_by_timesort`, called from inside the logged-in
+  page so the session key never leaves Chrome). A `<time datetime>` or
+  `data-timestamp` on the index page is used too. Display text like “Sunday, 15
+  November 2026, 11:59 PM” is shown but never parsed, so the badge is never hours
+  off. If the calendar service is unavailable, the sync still stores status and
+  due text and says “due-date alerts limited”.
+- **Alert badge** — computed on the server: red **overdue** once the due instant
+  has passed, red **urgent** within 24 h, amber **soon** within 48 h. Roles are
+  sorted so overdue and urgent work floats to the top.
+
+Press **Sync** in the Moodle connection panel to re-read everything at any time;
+the hint under the buttons shows progress and any course that could not be read.
+Each sync overwrites the stored status, so a resubmitted assignment stops looking
+pending. There is no background timer: sync runs on login and when you ask.
+
 ---
 
 ## What it can do
@@ -84,6 +113,7 @@ agent's activity, local files, and any action that needs your approval.
 | Area | Capability |
 | --- | --- |
 | Moodle reading | Courses, course pages, assignments, due text, submission status, visible page text and links |
+| Assignment sync | On login (and on demand) reads every course's assignment index and stores submission status, due date, and a due-soon/overdue badge — no model involved |
 | Attachments | Download files linked on assignment pages into the assignment workspace |
 | Documents | Read PDFs (PyMuPDF), DOCX/TXT/MD/CSV/JSON/YAML/code |
 | Study help | Explain assignments, break requirements into tasks, work through problems step by step |
@@ -110,8 +140,8 @@ agent's activity, local files, and any action that needs your approval.
 Visible Chrome  <--Playwright-->  BrowserSession  -->  Moodle parsers
       |                                                    |
       | manual login                                       v
-      +-------------------------------------------->  Tool registry
-                                                           |
+      +--------------------> AppState sync  --------->  Tool registry
+                                   |                       |
    FastAPI + SSE  <---- events/approvals ----  Agent loop (validated tool calls)
         |                                                  |
         v                                                  v
@@ -120,6 +150,10 @@ Visible Chrome  <--Playwright-->  BrowserSession  -->  Moodle parsers
         +--> SQLite (courses, assignments, conversations, activity, approvals)
         +--> workspace/ (course material, explanations, generated files)
 ```
+
+The dashboard's assignment list is filled by `app/sync.py`, which `AppState`
+runs directly (after login, or from the **Sync** button). It is not a model tool,
+so the tool set below is unchanged and the model cannot start a scrape.
 
 A chat turn is a bounded tool-calling loop:
 
@@ -185,6 +219,9 @@ Copy `.env.example` to `.env`. Useful values:
 | `MAX_TOOL_RESULT_CHARS` | `8000` | Tool result cap |
 | `APPROVAL_TIMEOUT_S` | `300` | A timeout denies the action |
 | `MAX_AGENT_ITERATIONS` | `12` | Tool-round safety bound |
+| `SYNC_ON_CONNECT` | `true` | Read courses/status/due dates automatically once login is detected |
+| `DUE_SOON_HOURS` | `48` | Amber badge threshold |
+| `DUE_URGENT_HOURS` | `24` | Red badge threshold; must not exceed `DUE_SOON_HOURS` |
 
 `python-docx` files, PDFs, and browser output stay on this machine. No API keys
 are required anywhere.
@@ -288,7 +325,7 @@ $env:RUN_OLLAMA_TESTS="1"
 python -m pytest tests/test_ollama.py -q
 ```
 
-The fast suite covers 81 tests plus 9 skipped tests that need a real browser or
+The fast suite covers 113 tests plus 10 skipped tests that need a real browser or
 the local model. With `RUN_BROWSER_TESTS=1` the browser tests run for real and
 only the Ollama tests remain skipped. The optional browser suite includes:
 

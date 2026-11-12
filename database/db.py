@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS assignments (
     url TEXT NOT NULL UNIQUE,
     due_text TEXT,
     status_text TEXT,
+    due_at TEXT,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    last_synced_at TEXT,
     workspace_path TEXT,
     last_opened_at TEXT,
     created_at TEXT NOT NULL
@@ -89,6 +92,15 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Columns added after the first release. ``CREATE TABLE IF NOT EXISTS`` never
+# alters an existing table, so an older database gets them through ALTER TABLE.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("assignments", "due_at", "TEXT"),
+    ("assignments", "status", "TEXT NOT NULL DEFAULT 'unknown'"),
+    ("assignments", "last_synced_at", "TEXT"),
+)
+
+
 def _as_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
@@ -109,7 +121,20 @@ class Database:
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(_SCHEMA)
+            self._migrate_columns()
             self._conn.commit()
+
+    def _migrate_columns(self) -> None:
+        """Add sync columns to a database created before they existed."""
+        for table, column, definition in _ADDED_COLUMNS:
+            existing = {
+                row["name"]
+                for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if column not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -258,6 +283,56 @@ class Database:
             ).fetchone()
             self._conn.commit()
             return int(row["id"])
+
+    def record_synced_assignment(
+        self,
+        course_id: int | None,
+        name: str,
+        url: str,
+        *,
+        due_text: str | None = None,
+        due_at: str | None = None,
+        status: str = "unknown",
+        status_text: str | None = None,
+    ) -> int:
+        """Store what a full course sync saw, overwriting previously synced values.
+
+        Unlike :meth:`upsert_assignment` this clears stale values: a resubmitted
+        assignment must stop looking pending, so ``COALESCE`` on the old row is
+        wrong here. Workspace bookkeeping is never touched.
+        """
+
+        now = _utc_now()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO assignments("
+                "course_id, name, url, due_text, status_text, due_at, status, "
+                "last_synced_at, created_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(url) DO UPDATE SET "
+                "course_id=COALESCE(excluded.course_id, assignments.course_id), "
+                "name=excluded.name, "
+                "due_text=excluded.due_text, "
+                "status_text=excluded.status_text, "
+                "due_at=excluded.due_at, "
+                "status=excluded.status, "
+                "last_synced_at=excluded.last_synced_at",
+                (course_id, name, url, due_text, status_text, due_at, status, now, now),
+            )
+            row = self._conn.execute(
+                "SELECT id FROM assignments WHERE url=?", (url,)
+            ).fetchone()
+            self._conn.commit()
+            return int(row["id"])
+
+    def latest_sync_at(self) -> str | None:
+        """When the last full course sync wrote anything, or None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(last_synced_at) AS latest FROM assignments"
+            ).fetchone()
+        latest = row["latest"] if row is not None else None
+        return str(latest) if latest else None
 
     def set_assignment_workspace(self, assignment_id: int, workspace_path: str) -> None:
         with self._lock:

@@ -200,6 +200,18 @@ def create_app(injected_state: AppState | None = None) -> FastAPI:
     async def browser_check_login(state: AppState = Depends(get_state)) -> dict[str, Any]:
         return await state.browser_status()
 
+    # ---------- Moodle sync ----------
+
+    @app.post("/api/sync")
+    async def sync_now(state: AppState = Depends(get_state)) -> dict[str, Any]:
+        """Read courses, assignment status, and due dates without the model."""
+        try:
+            return state.start_sync("manual")
+        except BusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # ---------- chat & events ----------
 
     @app.post("/api/chat")
