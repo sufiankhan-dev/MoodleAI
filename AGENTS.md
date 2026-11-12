@@ -248,6 +248,20 @@ was installed. Python dependencies stay untouched.
 telemetry, a second API layer, moving business logic into Next route handlers, or
 anything in §1.
 
+**Status (2026-11-12): implemented.** `web/` contains the App Router dashboard
+(overview, chat, assignments, files, activity), shadcn primitives, SSE handling
+and the `X-MoodleAI` client. Verified: `npx tsc --noEmit`, `npm run build`, live
+pages against the backend, `/api/health` through the proxy, and `/api/events`
+streaming through the proxy. `app/ui/` and the FastAPI `/` route remain as the
+fallback; `tests/test_api.py` is unchanged and green. Run it with:
+
+```powershell
+python main.py          # backend, 127.0.0.1:8765
+cd web
+npm install             # first run only
+npm run dev             # dashboard, 127.0.0.1:3000
+```
+
 ---
 
 ## 7. Definition of done

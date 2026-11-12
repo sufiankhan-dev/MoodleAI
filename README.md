@@ -18,6 +18,7 @@ and no Moodle password storage.
 
 - Windows 10/11 (verified on Windows 11 build 26200)
 - Python 3.11+ (verified on 3.14.3)
+- Node.js 20.9+ and npm (verified on Node 24.21 / npm 11.19) — dashboard only
 - [Ollama](https://ollama.com/) running locally (verified on 0.40.15)
 - Google Chrome installed (verified on 156)
 - ~8 GB free RAM for `qwen3:8b` (31.7 GB available on the test machine)
@@ -48,6 +49,29 @@ python main.py
 
 Open **http://127.0.0.1:8765**.
 
+#### Dashboard (Next.js)
+
+The full dashboard lives in `web/` and talks to the same FastAPI backend through
+a same-origin `/api` proxy, so the loopback/CSRF model is unchanged.
+
+```powershell
+# terminal 1 — backend (required)
+python main.py
+
+# terminal 2 — dashboard
+cd web
+npm install          # first run only
+npm run dev          # http://127.0.0.1:3000
+```
+
+Use `npm run build` + `npm start` for the production build. Both dev and start
+bind to `127.0.0.1` only. The plain dashboard FastAPI serves at
+`http://127.0.0.1:8765` stays available as a fallback.
+
+The Next server proxies `/api/*` to `http://127.0.0.1:8765`; override with
+`MOODLEAI_BACKEND` if you moved `APP_PORT`. Every state-changing request still
+carries `X-MoodleAI: 1`.
+
 1. In **Moodle connection**, the URL is already filled with
    `https://lms.dsu.edu.pk/` (change it if you use another Moodle), then click
    **Connect**.
@@ -76,7 +100,7 @@ agent's activity, local files, and any action that needs your approval.
 | Study help | Explain assignments, break requirements into tasks, work through problems step by step |
 | File generation | Word `.docx`, PDF (Chrome print engine), and safe code/text files |
 | Workspace | Per-course / per-assignment folders with `instructions/`, `attachments/`, `extracted/`, `explanations/`, `code/`, `documents/`, `pdfs/`, `submission/` |
-| UI | Local chat with streaming, browser status, approvals, file tree/downloads, activity log, light/dark theme |
+| UI | Dashboard (Next.js + shadcn/ui): chat with streaming and tool traces, browser status, approvals, file tree/downloads, activity log, light/dark theme. FastAPI keeps serving the original single-page dashboard as a fallback |
 
 ### What it deliberately cannot do
 
@@ -189,7 +213,12 @@ MoodleAI/
 │   ├── config.py           # validated settings
 │   ├── security.py         # URL policy, path jail, sanitization
 │   ├── events.py           # in-process pub/sub
-│   └── ui/                 # dashboard: index.html, styles.css, app.js
+│   └── ui/                 # fallback dashboard: index.html, styles.css, app.js
+├── web/                    # Next.js + shadcn/ui dashboard (App Router, Tailwind)
+│   ├── app/                # routes: overview, chat, assignments, files, activity
+│   ├── components/         # shadcn primitives + dashboard views
+│   ├── lib/                # api client (X-MoodleAI header), types, formatting
+│   └── next.config.ts      # /api proxy → 127.0.0.1:8765
 ├── agent/
 │   ├── llm.py              # local Ollama client
 │   ├── loop.py             # bounded tool-calling loop
