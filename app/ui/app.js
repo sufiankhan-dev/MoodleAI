@@ -918,9 +918,9 @@
     text.textContent = item.message || "";
     text.title = item.message || "";
 
-    row.appendChild(time);
     row.appendChild(icon);
     row.appendChild(text);
+    row.appendChild(time);
     return row;
   }
 

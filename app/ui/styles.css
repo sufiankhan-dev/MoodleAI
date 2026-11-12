@@ -1530,46 +1530,72 @@ input[type="password"]:focus {
   overflow-y: auto;
 }
 
+.activity-log > .empty {
+  width: 100%;
+  margin: auto;
+}
+
+#activityCount {
+  min-width: 26px;
+  padding: 0 8px;
+  justify-content: center;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* icon | message | time — every column shares one 16px line box so the
+   three baselines line up even when a message wraps. */
 .activity-item {
   display: grid;
-  grid-template-columns: 15px minmax(0, 1fr) auto;
-  gap: 7px;
-  padding: 5px 0;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 6px 0;
   border-bottom: 1px solid var(--border);
   font-size: 11px;
-  line-height: 1.45;
+  line-height: 16px;
 }
 
 .activity-item:last-child {
+  padding-bottom: 0;
   border-bottom: 0;
 }
 
 .activity-item time {
   color: var(--muted-foreground);
-  font-size: 9.5px;
-  padding-top: 1px;
+  font-size: 10px;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .activity-item .act-icon {
-  text-align: center;
-  font-size: 10px;
-  line-height: 1.45;
-  padding-top: 1px;
+  width: 14px;
   color: var(--muted-foreground);
+  font-size: 10.5px;
+  line-height: 16px;
+  text-align: center;
 }
 
 .activity-item .act-text {
+  display: -webkit-box;
+  overflow: hidden;
   color: var(--foreground);
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.activity-item[data-level="error"] .act-text {
+.activity-item[data-level="error"] .act-text,
+.activity-item[data-level="error"] .act-icon {
   color: var(--bad);
 }
 
 .activity-item[data-kind="file"] .act-text,
-.activity-item[data-kind="download"] .act-text {
+.activity-item[data-kind="download"] .act-text,
+.activity-item[data-kind="file"] .act-icon,
+.activity-item[data-kind="download"] .act-icon {
   color: var(--ok);
 }
 
