@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -17,8 +16,6 @@ from app.config import load_settings
 from app.state import AppState
 from tools.base import ToolContext, ToolError
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-UI_NAMES = ("index.html", "styles.css", "app.js")
 EXPECTED_TOOLS = {
     "get_current_page",
     "get_page_content",
@@ -78,41 +75,29 @@ def api(tmp_path: Path):
     )
     settings.ensure_directories()
 
-    target_ui = tmp_path / "app" / "ui"
-    target_ui.mkdir(parents=True, exist_ok=True)
-    for name in UI_NAMES:
-        shutil.copyfile(PROJECT_ROOT / "app" / "ui" / name, target_ui / name)
-
     state = AppState(settings, llm=FakeLLM())
     app = create_app(state)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         yield client, state, settings
 
 
-def test_ui_assets_are_served_with_security_headers(api) -> None:
+def test_root_points_at_the_dashboard(api) -> None:
     client, _state, _settings = api
 
     index = client.get("/")
     assert index.status_code == 200
     assert "text/html" in index.headers["content-type"]
     assert "MoodleAI" in index.text
-
-    css = client.get("/styles.css")
-    assert css.status_code == 200
-    assert "text/css" in css.headers["content-type"]
-    assert ":root" in css.text
-
-    script = client.get("/app.js")
-    assert script.status_code == 200
-    assert "javascript" in script.headers["content-type"]
-    assert "EventSource" in script.text
-
-    for response in (index, css, script):
-        assert response.headers["x-content-type-options"] == "nosniff"
-        assert response.headers["x-frame-options"] == "DENY"
-        assert "default-src 'self'" in response.headers["content-security-policy"]
+    assert "127.0.0.1:3000" in index.text
+    assert index.headers["x-content-type-options"] == "nosniff"
+    assert index.headers["x-frame-options"] == "DENY"
+    assert "default-src 'self'" in index.headers["content-security-policy"]
 
     assert client.get("/favicon.ico").status_code == 204
+
+    # The old bundled dashboard is gone; FastAPI serves the API and a pointer page.
+    assert client.get("/styles.css").status_code == 404
+    assert client.get("/app.js").status_code == 404
 
 
 def test_state_and_tools_expose_only_implemented_capabilities(api) -> None:

@@ -57,21 +57,23 @@ tools/
 database/db.py          # SQLite repository (courses, assignments, conversations, messages,
                         # activity, approvals)
 config/app_state.json   # saved Moodle URL only
-app/ui/{index.html,styles.css,app.js}   # the entire dashboard today
+web/                    # Next.js + shadcn/ui dashboard (the UI)
 workspace/, generated/  # user content (gitignored)
 tests/                  # unit, API, browser, end-to-end
 ```
 
 Data flow: `Chrome ← Playwright ← BrowserSession ← Moodle parsers → ToolRegistry →
-MoodleAgent loop → events/approvals → FastAPI + SSE → dashboard → SQLite + workspace`.
+MoodleAgent loop → events/approvals → FastAPI + SSE → /api proxy → Next dashboard →
+SQLite + workspace`.
 
 ---
 
 ## 3. Commands
 
 ```powershell
-# run
-python main.py
+# run (two processes)
+python main.py                 # backend, 127.0.0.1:8765
+cd web; npm run dev            # dashboard, 127.0.0.1:3000
 
 # full fast suite (no browser, no model)
 $env:PYTHONIOENCODING="utf-8"
@@ -88,8 +90,9 @@ python -m pytest tests/test_api.py -q
 python -m pytest tests/test_api.py::test_name -q
 ```
 
-There is no linter, formatter, or type-checker configured. **Do not invent one or
-add one without asking.** Match the existing style instead (§5).
+There is no Python linter, formatter, or type-checker configured. **Do not invent
+one or add one without asking.** Match the existing style instead (§5). The Next
+app type-checks via `npx tsc --noEmit` (run from `web/`).
 
 ---
 
@@ -181,15 +184,20 @@ lowercase, imperative, no trailing period — see `git log`.
 4. Keep `connect-src 'self'` in mind: the browser only talks to the same origin.
 5. Add an API test; update the README if it is user-facing.
 
-**UI (current, until the §6 migration lands)**
+**UI (Next.js + shadcn/ui, in `web/`)**
 
-- `app/ui/index.html` + `styles.css` + `app.js`, loaded as static files by
-  `app/api.py`. No framework, no bundler.
-- All state-changing fetches include `X-MoodleAI: 1`; live updates use
-  `EventSource("/api/events")`.
-- Respect the CSP header set in `app/api.py`: no inline `<script>`, no CDN links.
-- `tests/test_api.py` asserts the three UI files are served (`UI_NAMES`) — keep
-  them present and updated when the dashboard changes.
+- App Router + Tailwind. Views live in `web/components`, generated shadcn
+  primitives in `web/components/ui`. No server actions, no business logic in the
+  client.
+- `web/lib/api.ts` is the only place `fetch` and `EventSource` are constructed.
+  `apiFetch()` adds `X-MoodleAI: 1` to every POST/PUT/PATCH/DELETE.
+- Live updates use `EventSource("/api/events")` via
+  `components/dashboard-provider.tsx`; a reconnect re-reads `/api/state`.
+- The Next server proxies `/api/*` to FastAPI. Never bypass it with a direct
+  cross-origin call or permissive CORS — `connect-src 'self'` must keep working.
+- FastAPI's `/` is only a pointer page to `DASHBOARD_URL` (loopback-only,
+  default `http://127.0.0.1:3000`). `tests/test_api.py` asserts that page and
+  that `/styles.css` and `/app.js` are gone (404).
 
 ---
 
@@ -232,11 +240,12 @@ web/                        # Next.js app (repo root, sibling of app/)
 5. **No secrets in the client.** No tokens, no Moodle URLs with query strings.
 6. **Approvals keep their semantics.** Timeout denies, Stop denies pending, the
    dialog is blocking. The UI never auto-approves.
-7. **Keep the dashboard useful without it.** FastAPI keeps serving `/` until the
-   Next dashboard reaches parity, so `python main.py` never lands on a dead page.
-8. **UI-asset tests move in the same change.** `tests/test_api.py` (`UI_NAMES`,
-   `/styles.css`, `/app.js`) is updated when `app/ui/` is removed — no test is
-   deleted before its replacement exists.
+7. **`python main.py` never lands on a dead page.** FastAPI's `/` returns a small
+   pointer page linking to `DASHBOARD_URL` (default `http://127.0.0.1:3000`).
+8. **UI-asset tests moved with the removal.** `app/ui/` and its static routes are
+   gone; `tests/test_api.py` asserts the pointer page instead and that
+   `/styles.css` and `/app.js` return 404 — no test was dropped without a
+   replacement assertion.
 9. **README updates in the same change.** Architecture diagram, the UI row, the
    run instructions (now two processes), and the test counts.
 
@@ -248,12 +257,13 @@ was installed. Python dependencies stay untouched.
 telemetry, a second API layer, moving business logic into Next route handlers, or
 anything in §1.
 
-**Status (2026-11-12): implemented.** `web/` contains the App Router dashboard
-(overview, chat, assignments, files, activity), shadcn primitives, SSE handling
-and the `X-MoodleAI` client. Verified: `npx tsc --noEmit`, `npm run build`, live
-pages against the backend, `/api/health` through the proxy, and `/api/events`
-streaming through the proxy. `app/ui/` and the FastAPI `/` route remain as the
-fallback; `tests/test_api.py` is unchanged and green. Run it with:
+**Status (2026-11-12): implemented; legacy dashboard removed.** `web/` contains
+the App Router dashboard (overview, chat, assignments, files, activity), shadcn
+primitives, SSE handling and the `X-MoodleAI` client. Verified: `npx tsc --noEmit`,
+`npm run build`, live pages against the backend, `/api/health` through the proxy,
+and `/api/events` streaming through the proxy. `app/ui/` and its static routes are
+deleted; FastAPI's `/` now serves a loopback-only pointer page to `DASHBOARD_URL`,
+and `tests/test_api.py` asserts that (80 passed, 9 skipped). Run it with:
 
 ```powershell
 python main.py          # backend, 127.0.0.1:8765

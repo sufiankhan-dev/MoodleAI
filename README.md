@@ -47,12 +47,13 @@ The defaults work without editing `.env`. Keep `APP_HOST=127.0.0.1` and
 python main.py
 ```
 
-Open **http://127.0.0.1:8765**.
+This starts the API on **http://127.0.0.1:8765** (its root URL is a pointer page
+to the dashboard below). The dashboard itself is a separate Next.js app.
 
 #### Dashboard (Next.js)
 
-The full dashboard lives in `web/` and talks to the same FastAPI backend through
-a same-origin `/api` proxy, so the loopback/CSRF model is unchanged.
+The dashboard lives in `web/` and talks to the same FastAPI backend through a
+same-origin `/api` proxy, so the loopback/CSRF model is unchanged.
 
 ```powershell
 # terminal 1 — backend (required)
@@ -65,8 +66,7 @@ npm run dev          # http://127.0.0.1:3000
 ```
 
 Use `npm run build` + `npm start` for the production build. Both dev and start
-bind to `127.0.0.1` only. The plain dashboard FastAPI serves at
-`http://127.0.0.1:8765` stays available as a fallback.
+bind to `127.0.0.1` only.
 
 The Next server proxies `/api/*` to `http://127.0.0.1:8765`; override with
 `MOODLEAI_BACKEND` if you moved `APP_PORT`. Every state-changing request still
@@ -100,7 +100,7 @@ agent's activity, local files, and any action that needs your approval.
 | Study help | Explain assignments, break requirements into tasks, work through problems step by step |
 | File generation | Word `.docx`, PDF (Chrome print engine), and safe code/text files |
 | Workspace | Per-course / per-assignment folders with `instructions/`, `attachments/`, `extracted/`, `explanations/`, `code/`, `documents/`, `pdfs/`, `submission/` |
-| UI | Dashboard (Next.js + shadcn/ui): chat with streaming and tool traces, browser status, approvals, file tree/downloads, activity log, light/dark theme. FastAPI keeps serving the original single-page dashboard as a fallback |
+| UI | Dashboard (Next.js + shadcn/ui): chat with streaming and tool traces, browser status, approvals, file tree/downloads, activity log, light/dark theme |
 
 ### What it deliberately cannot do
 
@@ -126,7 +126,7 @@ Visible Chrome  <--Playwright-->  BrowserSession  -->  Moodle parsers
    FastAPI + SSE  <---- events/approvals ----  Agent loop (validated tool calls)
         |                                                  |
         v                                                  v
-   Dashboard (HTML/CSS/JS)                        Ollama qwen3:8b (localhost)
+   Dashboard (Next.js, 127.0.0.1:3000)           Ollama qwen3:8b (localhost)
         |
         +--> SQLite (courses, assignments, conversations, activity, approvals)
         +--> workspace/ (course material, explanations, generated files)
@@ -180,7 +180,8 @@ Copy `.env.example` to `.env`. Useful values:
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `APP_HOST` | `127.0.0.1` | Validated: loopback only |
-| `APP_PORT` | `8765` | Dashboard port |
+| `APP_PORT` | `8765` | Backend/API port (the dashboard proxies to it) |
+| `DASHBOARD_URL` | `http://127.0.0.1:3000` | Link target of the backend's pointer page; loopback only |
 | `OLLAMA_HOST` | `http://localhost:11434` | Must be local |
 | `OLLAMA_MODEL` | `qwen3:8b` | Any installed local model works, but the app is tuned for qwen3 |
 | `OLLAMA_NUM_CTX` | `16384` | Context window |
@@ -212,8 +213,7 @@ MoodleAI/
 │   ├── state.py            # app state, approvals, run lifecycle
 │   ├── config.py           # validated settings
 │   ├── security.py         # URL policy, path jail, sanitization
-│   ├── events.py           # in-process pub/sub
-│   └── ui/                 # fallback dashboard: index.html, styles.css, app.js
+│   └── events.py           # in-process pub/sub
 ├── web/                    # Next.js + shadcn/ui dashboard (App Router, Tailwind)
 │   ├── app/                # routes: overview, chat, assignments, files, activity
 │   ├── components/         # shadcn primitives + dashboard views
@@ -288,7 +288,7 @@ Do not expose port 8765 through a tunnel, reverse proxy, or firewall rule.
 ```powershell
 $env:PYTHONIOENCODING="utf-8"
 
-# Fast suite: config, security, database, parsers, loop, tools, API, UI assets
+# Fast suite: config, security, database, parsers, loop, tools, API
 python -m pytest tests -q
 
 # Optional: real visible Chrome tests (opens and closes a browser window)
@@ -300,9 +300,9 @@ $env:RUN_OLLAMA_TESTS="1"
 python -m pytest tests/test_ollama.py -q
 ```
 
-The fast suite covers 67 tests plus 7 skipped tests that need a real browser or
-the local model. With `RUN_BROWSER_TESTS=1` the full run is 71 tests. The
-optional browser suite includes:
+The fast suite covers 80 tests plus 9 skipped tests that need a real browser or
+the local model. With `RUN_BROWSER_TESTS=1` the browser tests run for real and
+only the Ollama tests remain skipped. The optional browser suite includes:
 
 - visible Chrome launch, login detection, and host-policy enforcement
 - live Moodle DOM parsing for courses/assignments/assignment details
