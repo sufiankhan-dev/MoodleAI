@@ -85,6 +85,14 @@ class Settings:
     max_agent_iterations: int
 
     @property
+    def app_dir(self) -> Path:
+        return self.project_root / "app"
+
+    @property
+    def ui_dir(self) -> Path:
+        return self.app_dir / "ui"
+
+    @property
     def workspace_dir(self) -> Path:
         return self.project_root / "workspace"
 

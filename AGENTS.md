@@ -5,9 +5,8 @@ an AI agent. Read it at the start of a session. If a request conflicts with a ru
 here, say so and ask before proceeding.
 
 **Stack:** Python 3.11+ (verified 3.14.3) · FastAPI · Playwright · local Ollama
-(`qwen3:8b`) · SQLite. Dashboard today is vanilla HTML/CSS/JS with no Node and no
-build step; it is being migrated to **Next.js + shadcn/ui** (§6). **No cloud AI,
-no API keys, ever.**
+(`qwen3:8b`) · SQLite. Dashboard is vanilla HTML/CSS/JS served by FastAPI: no
+Node, no build step (§6). **No cloud AI, no API keys, ever.**
 
 ---
 
@@ -20,7 +19,7 @@ from the owner — and even then, stop and confirm.
 | --- | --- | --- |
 | **Loopback only** | `app/config.py` (`load_settings`), `app/api.py` (`local_only`) | `APP_HOST` stays `127.0.0.1`/`localhost`/`::1`. Host and `Origin` headers are checked on every request. |
 | **Local model only** | `app/config.py` | `OLLAMA_HOST` must resolve to loopback. No cloud inference, ever. |
-| **No password handling** | `browser/session.py`, UI | Login is manual in visible Chrome. Never ask for, read, type, log, or store Moodle credentials. |
+| **No password handling** | `browser/session.py`, `app/ui/` | Moodle *account* login is manual in visible Chrome; the app never asks for, reads, types, logs, or stores it. The single exception is the optional **network** (HTTP Basic auth) pair in the collapsed "Network login" panel: it goes straight to Playwright's context at launch, lives in memory only, is cleared on disconnect, and is never logged, stored, or put in the database. |
 | **Read-only Moodle** | `app/security.py`, `browser/moodle.py`, `tools/` | No submit, upload, delete, grade, profile, or enrolment actions. Dangerous paths stay blocked even if the model asks. |
 | **Path jail** | `app/security.py` (`PathJail`), `tools/` | All writes resolve under `workspace/` or `generated/`. Reject traversal, absolute paths, symlinks. |
 | **Approval gate** | `app/state.py`, `tools/base.py` (`ToolContext.require_approval`) | Overwrites and refreshes pause for a click. Timeout = deny. Stop = deny pending. |
@@ -57,13 +56,13 @@ tools/
 database/db.py          # SQLite repository (courses, assignments, conversations, messages,
                         # activity, approvals)
 config/app_state.json   # saved Moodle URL only
-web/                    # Next.js + shadcn/ui dashboard (the UI)
+app/ui/                 # the dashboard: index.html, styles.css, app.js
 workspace/, generated/  # user content (gitignored)
 tests/                  # unit, API, browser, end-to-end
 ```
 
 Data flow: `Chrome ← Playwright ← BrowserSession ← Moodle parsers → ToolRegistry →
-MoodleAgent loop → events/approvals → FastAPI + SSE → /api proxy → Next dashboard →
+MoodleAgent loop → events/approvals → FastAPI + SSE → app/ui dashboard →
 SQLite + workspace`.
 
 ---
@@ -71,9 +70,8 @@ SQLite + workspace`.
 ## 3. Commands
 
 ```powershell
-# run (two processes)
-python main.py                 # backend, 127.0.0.1:8765
-cd web; npm run dev            # dashboard, 127.0.0.1:3000
+# run (one process; the dashboard is served by FastAPI)
+python main.py                 # app + dashboard, 127.0.0.1:8765
 
 # full fast suite (no browser, no model)
 $env:PYTHONIOENCODING="utf-8"
@@ -91,8 +89,8 @@ python -m pytest tests/test_api.py::test_name -q
 ```
 
 There is no Python linter, formatter, or type-checker configured. **Do not invent
-one or add one without asking.** Match the existing style instead (§5). The Next
-app type-checks via `npx tsc --noEmit` (run from `web/`).
+one or add one without asking.** Match the existing style instead (§5). The
+dashboard is plain CSS/JS with no type-checking or build step.
 
 ---
 
@@ -124,8 +122,8 @@ app type-checks via `npx tsc --noEmit` (run from `web/`).
 **Ask before doing any of these**
 
 - Adding a dependency (Python or Node) or changing `requirements.txt` versions.
-  The only standing exception is the Node packages approved for the migration
-  in §6; everything else needs a yes first.
+  The dashboard has no Node dependencies any more (§6), so every new package
+  needs a yes first.
 - Changing `app/api.py` security middleware, `app/config.py` validation, or
   anything in `app/security.py`.
 - Adding, removing, or re-flagging a tool in the registry (changes model behaviour).
@@ -184,92 +182,90 @@ lowercase, imperative, no trailing period — see `git log`.
 4. Keep `connect-src 'self'` in mind: the browser only talks to the same origin.
 5. Add an API test; update the README if it is user-facing.
 
-**UI (Next.js + shadcn/ui, in `web/`)**
+**UI (vanilla HTML/CSS/JS, in `app/ui/`)**
 
-- App Router + Tailwind. Views live in `web/components`, generated shadcn
-  primitives in `web/components/ui`. No server actions, no business logic in the
-  client.
-- `web/lib/api.ts` is the only place `fetch` and `EventSource` are constructed.
-  `apiFetch()` adds `X-MoodleAI: 1` to every POST/PUT/PATCH/DELETE.
-- Live updates use `EventSource("/api/events")` via
-  `components/dashboard-provider.tsx`; a reconnect re-reads `/api/state`.
-- The Next server proxies `/api/*` to FastAPI. Never bypass it with a direct
-  cross-origin call or permissive CORS — `connect-src 'self'` must keep working.
-- FastAPI's `/` is only a pointer page to `DASHBOARD_URL` (loopback-only,
-  default `http://127.0.0.1:3000`). `tests/test_api.py` asserts that page and
-  that `/styles.css` and `/app.js` are gone (404).
+- Three files only: `index.html`, `styles.css`, `app.js`. No Node, no bundler, no
+  framework. FastAPI serves them from `/`, `/styles.css`, `/app.js`.
+- The visual language is the shadcn/ui token set (§6): oklch neutrals, a
+  `0.65rem` radius, hairline borders, flat cards, small controls, light/dark theme
+  driven by `data-theme` on `<html>`. Stay inside those tokens; no new colour
+  literals and no external fonts or CDNs (`default-src 'self'`).
+- `app.js` is the only place `fetch` and `EventSource` are constructed. Its `api()`
+  helper adds `X-MoodleAI: 1` to every POST/PUT/PATCH/DELETE.
+- Live updates use `EventSource("/api/events")`; a reconnect re-reads `/api/state`.
+- Model output is untrusted: Markdown is escaped before the allow-listed formatter
+  runs, and links are limited to `http(s)`.
+- The dashboard asks for **no credentials** — no password field anywhere. Login
+  happens in visible Chrome (§1).
+- `app/ui/` is copied into `tmp_path` by `tests/test_api.py`, which asserts the
+  three assets, their security headers, and the absence of credential inputs.
 
 ---
 
-## 6. Decided: UI redesign with Next.js + shadcn/ui
+## 6. Decided: dashboard stays vanilla, styled like the shadcn app
 
-**Owner decision (2026-11-12): Option A — Next.js (App Router) + shadcn/ui +
-Tailwind CSS.** The current `app/ui/` dashboard is compact and will be replaced by
-a real **dashboard layout**: sidebar + top bar + padded content grid, cards,
-data tables, sheets/dialogs for approvals, toasts for agent events, responsive
-breakpoints.
+**Owner decision (2026-11-12, same day): reverse the Next.js migration.** Option A
+(Next.js + shadcn/ui + Tailwind in `web/`) was built, then rejected: the value was
+in the *look*, not the toolchain, and a second runtime plus a build step was not
+worth it for a single-page dashboard. `web/` was deleted; `app/ui/` is the UI, and
+`python main.py` serves app and dashboard on `127.0.0.1:8765` in one process.
 
-Scope of the migration: **the front end only.** `main.py`, `app/api.py`,
-`app/state.py`, `app/config.py`, `app/security.py`, `agent/`, `browser/`,
-`tools/`, and `database/` are not rewritten. FastAPI stays the single backend.
+**What "like the Next app" means here:** the design tokens and component
+treatment, not the framework. Concretely:
 
-**Target shape**
+- Tokens copied from the former `web/app/globals.css`: `--background`,
+  `--foreground`, `--card`, `--primary`, `--muted`, `--muted-foreground`,
+  `--accent`, `--destructive`, `--border`, `--input`, `--ring`, `--sidebar*`, in
+  oklch, with light, `prefers-color-scheme: dark`, and `[data-theme="dark"]` sets.
+- Component feel: shadcn card (flat, hairline border, `--radius`), button variants
+  (`btn-primary` = near-black `--primary`, `btn-ghost`, `btn-danger` =
+  `--destructive`, `btn-icon`), badge-shaped pills, segmented tabs, muted table-ish
+  list rows, dialog-shaped approval modal, sonner-style bottom-right toast.
+- No framework, no Tailwind, no JSX, no `web/`, no `package.json`. The class names
+  are the contract between `app.js` and `styles.css`.
 
-```
-web/                        # Next.js app (repo root, sibling of app/)
-  app/                      # App Router routes: (dashboard)/…
-  components/ui/            # shadcn components (generated, committed)
-  lib/api.ts                # the only place fetch/EventSource are constructed
-  next.config.ts            # rewrites: /api/* and /api/events → http://127.0.0.1:8765
-  README note               # how to run both processes
-```
+**Non-negotiables**
 
-**Non-negotiables for the migration**
-
-1. **Same-origin proxy.** The browser talks only to the Next dev/prod server
-   (`127.0.0.1:3000`); `next.config` rewrites `/api/:path*` to
-   `http://127.0.0.1:8765/api/:path*`. Do not add permissive CORS and do not
-   widen FastAPI's `connect-src 'self'` — the proxy is what keeps §1 intact.
-2. **Loopback bind.** Run with `next dev -H 127.0.0.1` (and the same for
-   `next start`). Never `0.0.0.0`. The README promise still holds.
-3. **`X-MoodleAI: 1` on every mutation.** One `apiFetch()` in `lib/api.ts` sets
-   it for POST/PUT/PATCH/DELETE. No component calls `fetch` directly.
-4. **SSE must stream.** `/api/events` goes through the proxy with buffering and
-   compression disabled on that route; the client reconnects with backoff and
-   re-reads `/api/state` after a reconnect.
-5. **No secrets in the client.** No tokens, no Moodle URLs with query strings.
-6. **Approvals keep their semantics.** Timeout denies, Stop denies pending, the
+1. **One process, same origin.** FastAPI serves `/`, `/styles.css`, `/app.js`.
+   No dev server, no proxy, no CORS, no `DASHBOARD_URL`.
+2. **`X-MoodleAI: 1` on every mutation**, set in one place in `app.js`.
+3. **SSE streams directly** from `/api/events`; reconnect re-reads `/api/state`.
+4. **No secrets in the client.** No tokens, no Moodle URLs with query strings.
+5. **Approvals keep their semantics.** Timeout denies, Stop denies pending, the
    dialog is blocking. The UI never auto-approves.
-7. **`python main.py` never lands on a dead page.** FastAPI's `/` returns a small
-   pointer page linking to `DASHBOARD_URL` (default `http://127.0.0.1:3000`).
-8. **UI-asset tests moved with the removal.** `app/ui/` and its static routes are
-   gone; `tests/test_api.py` asserts the pointer page instead and that
-   `/styles.css` and `/app.js` return 404 — no test was dropped without a
-   replacement assertion.
-9. **README updates in the same change.** Architecture diagram, the UI row, the
-   run instructions (now two processes), and the test counts.
+6. **`python main.py` lands on the real dashboard**, not a placeholder page.
+7. **`tests/test_api.py` asserts the three assets** and their security headers,
+   and that the only password field is the transient network-login one.
+8. **README updated in the same change** (run instructions, UI row, tree, counts).
 
-**Dependencies:** adding Node packages is expected for this work and is approved
-*for this migration only*. Pin versions, commit `package-lock.json`, and say what
-was installed. Python dependencies stay untouched.
+**Not approved:** reintroducing Node/Next/Tailwind, SSR, a second API layer,
+moving logic into the client, or anything in §1.
 
-**Not approved by this decision:** SSR/data-fetching from FastAPI, auth,
-telemetry, a second API layer, moving business logic into Next route handlers, or
-anything in §1.
+**Status (2026-11-12): reverted and restyled; `web/` deleted.** `app/ui/` is
+restored from the pre-migration commit. `styles.css` was rewritten on the shadcn
+token set; `app.js` keeps its structure. `app/api.py` serves the three assets
+again, `app/config.py` has `ui_dir` back, and `tests/test_api.py` asserts them
+(81 passed, 9 skipped). Tool-call rows were reworked into a two-column grid
+(state icon, then tool name) aligned to the assistant bubble edge, with the
+result text on a second line in the same column.
 
-**Status (2026-11-12): implemented; legacy dashboard removed.** `web/` contains
-the App Router dashboard (overview, chat, assignments, files, activity), shadcn
-primitives, SSE handling and the `X-MoodleAI` client. Verified: `npx tsc --noEmit`,
-`npm run build`, live pages against the backend, `/api/health` through the proxy,
-and `/api/events` streaming through the proxy. `app/ui/` and its static routes are
-deleted; FastAPI's `/` now serves a loopback-only pointer page to `DASHBOARD_URL`,
-and `tests/test_api.py` asserts that (80 passed, 9 skipped). Run it with:
+The collapsed **Network login** panel is part of this UI on purpose:
+`browser/session.py` raises an explicit error telling the user to open it when a
+campus fronts Moodle with HTTP Basic auth, so the panel cannot be removed without
+breaking that recovery path. It is the only credential field in the app; see the
+§1 row for the guarantees.
+
+Verified in a browser at 127.0.0.1:8765: page loads with no console errors, every
+CSS rule parsed, both themes resolve, sidebar/card geometry correct, tool rows
+flush with the assistant bubble edge (both `x=367`), 6px gaps between consecutive
+rows, and the network-login panel closed → hidden, open → 34px fields in two equal
+columns. Not verified: a live model run producing real tool rows, and a real HTTP
+Basic auth connect (that opens Chrome against Moodle).
+
+Run it with:
 
 ```powershell
-python main.py          # backend, 127.0.0.1:8765
-cd web
-npm install             # first run only
-npm run dev             # dashboard, 127.0.0.1:3000
+python main.py          # app + dashboard, 127.0.0.1:8765
 ```
 
 ---

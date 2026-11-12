@@ -7,23 +7,15 @@ header on state-changing requests to block cross-site form posts (CSRF).
 from __future__ import annotations
 
 import asyncio
-import html
 import json
 import logging
 import mimetypes
-import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
-    JSONResponse,
-    Response,
-    StreamingResponse,
-)
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import load_settings
@@ -32,60 +24,6 @@ from browser.session import BrowserError
 
 logger = logging.getLogger(__name__)
 API_VERSION = "0.1.0"
-
-_DEFAULT_DASHBOARD_URL = "http://127.0.0.1:3000"
-
-
-def dashboard_url() -> str:
-    """Where the Next.js dashboard serves. Loopback only, like everything else."""
-    raw = (os.getenv("DASHBOARD_URL") or _DEFAULT_DASHBOARD_URL).strip().rstrip("/")
-    parsed = urlparse(raw)
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme not in {"http", "https"} or host not in {"127.0.0.1", "localhost", "::1"}:
-        logger.warning("Ignoring non-loopback DASHBOARD_URL %r", raw)
-        return _DEFAULT_DASHBOARD_URL
-    return raw
-
-
-_LANDING_PAGE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MoodleAI — backend running</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
-         font: 15px/1.6 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
-         background: Canvas; color: CanvasText; padding: 24px; }
-  main { max-width: 34rem; }
-  .mark { width: 40px; height: 40px; border-radius: 10px; display: grid;
-          place-items: center; background: #1c1e26; color: #fff; font-weight: 600; }
-  h1 { font-size: 1.25rem; margin: 16px 0 4px; letter-spacing: -0.01em; }
-  p { margin: 0 0 12px; color: GrayText; }
-  a.button { display: inline-block; margin: 8px 8px 0 0; padding: 8px 14px;
-             border-radius: 8px; background: #1c1e26; color: #fff;
-             text-decoration: none; font-weight: 500; font-size: 13px; }
-  code { background: rgba(127,127,127,.18); padding: 2px 6px; border-radius: 5px;
-         font: 12px ui-monospace, Consolas, monospace; }
-  .foot { margin-top: 20px; font-size: 12px; color: GrayText; }
-</style>
-</head>
-<body>
-<main>
-  <div class="mark">M</div>
-  <h1>MoodleAI backend is running</h1>
-  <p>The dashboard is a separate Next.js app. Start it, then open the URL below.</p>
-  <p><code>cd web &amp;&amp; npm run dev</code></p>
-  <a class="button" href="__DASHBOARD__">Open dashboard</a>
-  <a class="button" style="background:transparent;color:inherit;border:1px solid GrayText"
-     href="/docs">API docs</a>
-  <p class="foot">Local only · 127.0.0.1 · no cloud AI · no password storage</p>
-</main>
-</body>
-</html>
-"""
-
 
 
 class ChatRequest(BaseModel):
@@ -183,12 +121,26 @@ def create_app(injected_state: AppState | None = None) -> FastAPI:
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    # ---------- dashboard pointer ----------
+    # ---------- static dashboard ----------
+
+    def _ui_file(name: str, media_type: str) -> FileResponse:
+        state = app.state.moodleai
+        path = state.settings.ui_dir / name
+        if not path.exists():
+            raise HTTPException(status_code=500, detail=f"UI file missing: {name}")
+        return FileResponse(path, media_type=media_type)
 
     @app.get("/", include_in_schema=False)
-    async def index() -> HTMLResponse:
-        page = _LANDING_PAGE.replace("__DASHBOARD__", html.escape(dashboard_url(), quote=True))
-        return HTMLResponse(page)
+    async def index() -> FileResponse:
+        return _ui_file("index.html", "text/html; charset=utf-8")
+
+    @app.get("/styles.css", include_in_schema=False)
+    async def styles() -> FileResponse:
+        return _ui_file("styles.css", "text/css; charset=utf-8")
+
+    @app.get("/app.js", include_in_schema=False)
+    async def script() -> FileResponse:
+        return _ui_file("app.js", "application/javascript; charset=utf-8")
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon() -> Response:

@@ -18,7 +18,6 @@ and no Moodle password storage.
 
 - Windows 10/11 (verified on Windows 11 build 26200)
 - Python 3.11+ (verified on 3.14.3)
-- Node.js 20.9+ and npm (verified on Node 24.21 / npm 11.19) — dashboard only
 - [Ollama](https://ollama.com/) running locally (verified on 0.40.15)
 - Google Chrome installed (verified on 156)
 - ~8 GB free RAM for `qwen3:8b` (31.7 GB available on the test machine)
@@ -47,38 +46,28 @@ The defaults work without editing `.env`. Keep `APP_HOST=127.0.0.1` and
 python main.py
 ```
 
-This starts the API on **http://127.0.0.1:8765** (its root URL is a pointer page
-to the dashboard below). The dashboard itself is a separate Next.js app.
+This starts the API **and** the dashboard on **http://127.0.0.1:8765**. There is
+no second process and no Node build step: the dashboard is three static files
+(`app/ui/index.html`, `app/ui/styles.css`, `app/ui/app.js`) served by FastAPI
+itself, so `connect-src 'self'` and the CSRF header keep working unchanged.
 
-#### Dashboard (Next.js)
-
-The dashboard lives in `web/` and talks to the same FastAPI backend through a
-same-origin `/api` proxy, so the loopback/CSRF model is unchanged.
-
-```powershell
-# terminal 1 — backend (required)
-python main.py
-
-# terminal 2 — dashboard
-cd web
-npm install          # first run only
-npm run dev          # http://127.0.0.1:3000
-```
-
-Use `npm run build` + `npm start` for the production build. Both dev and start
-bind to `127.0.0.1` only.
-
-The Next server proxies `/api/*` to `http://127.0.0.1:8765`; override with
-`MOODLEAI_BACKEND` if you moved `APP_PORT`. Every state-changing request still
-carries `X-MoodleAI: 1`.
+The dashboard's look (oklch neutrals, `0.65rem` radius, card/button/badge
+treatment) follows the shadcn/ui token set, so it reads like the previous
+Next.js dashboard while shaving a whole toolchain off the install.
 
 1. In **Moodle connection**, the URL is already filled with
-   `https://lms.dsu.edu.pk/` (change it if you use another Moodle), then click
-   **Connect**.
-2. A visible Chrome window opens with the persistent profile in `browser/profile`.
-3. Log in manually (including SSO/MFA). MoodleAI never sees, types, or stores the password.
-4. Click **Check login** once the Moodle dashboard is visible.
-5. Ask in the chat, for example:
+   `https://lms.dsu.edu.pk/` (change it if you use another Moodle).
+2. If your campus puts Moodle behind an HTTP Basic auth popup, open
+   **Network login (only if Chrome asks)** in that panel and enter the network
+   username and password. They go straight to Chrome for that one site, stay in
+   memory, and are cleared when you disconnect. Without them, Chrome cannot open
+   the page at all and the connect call says so explicitly.
+3. Click **Connect**. A visible Chrome window opens with the persistent profile in
+   `browser/profile`.
+4. Log in manually (including SSO/MFA). MoodleAI never sees, types, or stores your
+   Moodle account password.
+5. Click **Check login** once the Moodle dashboard is visible.
+6. Ask in the chat, for example:
    - “List my courses”
    - “Show my pending assignments”
    - “Open Database Systems and explain the latest assignment”
@@ -100,7 +89,7 @@ agent's activity, local files, and any action that needs your approval.
 | Study help | Explain assignments, break requirements into tasks, work through problems step by step |
 | File generation | Word `.docx`, PDF (Chrome print engine), and safe code/text files |
 | Workspace | Per-course / per-assignment folders with `instructions/`, `attachments/`, `extracted/`, `explanations/`, `code/`, `documents/`, `pdfs/`, `submission/` |
-| UI | Dashboard (Next.js + shadcn/ui): chat with streaming and tool traces, browser status, approvals, file tree/downloads, activity log, light/dark theme |
+| UI | Single-page dashboard served by FastAPI: chat with streaming and tool traces, browser status, approvals, file tree/downloads, activity log, light/dark theme |
 
 ### What it deliberately cannot do
 
@@ -126,7 +115,7 @@ Visible Chrome  <--Playwright-->  BrowserSession  -->  Moodle parsers
    FastAPI + SSE  <---- events/approvals ----  Agent loop (validated tool calls)
         |                                                  |
         v                                                  v
-   Dashboard (Next.js, 127.0.0.1:3000)           Ollama qwen3:8b (localhost)
+   Dashboard (single page, 127.0.0.1:8765)       Ollama qwen3:8b (localhost)
         |
         +--> SQLite (courses, assignments, conversations, activity, approvals)
         +--> workspace/ (course material, explanations, generated files)
@@ -180,8 +169,7 @@ Copy `.env.example` to `.env`. Useful values:
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `APP_HOST` | `127.0.0.1` | Validated: loopback only |
-| `APP_PORT` | `8765` | Backend/API port (the dashboard proxies to it) |
-| `DASHBOARD_URL` | `http://127.0.0.1:3000` | Link target of the backend's pointer page; loopback only |
+| `APP_PORT` | `8765` | API and dashboard port — one process serves both |
 | `OLLAMA_HOST` | `http://localhost:11434` | Must be local |
 | `OLLAMA_MODEL` | `qwen3:8b` | Any installed local model works, but the app is tuned for qwen3 |
 | `OLLAMA_NUM_CTX` | `16384` | Context window |
@@ -213,12 +201,8 @@ MoodleAI/
 │   ├── state.py            # app state, approvals, run lifecycle
 │   ├── config.py           # validated settings
 │   ├── security.py         # URL policy, path jail, sanitization
-│   └── events.py           # in-process pub/sub
-├── web/                    # Next.js + shadcn/ui dashboard (App Router, Tailwind)
-│   ├── app/                # routes: overview, chat, assignments, files, activity
-│   ├── components/         # shadcn primitives + dashboard views
-│   ├── lib/                # api client (X-MoodleAI header), types, formatting
-│   └── next.config.ts      # /api proxy → 127.0.0.1:8765
+│   ├── events.py           # in-process pub/sub
+│   └── ui/                 # dashboard: index.html, styles.css, app.js
 ├── agent/
 │   ├── llm.py              # local Ollama client
 │   ├── loop.py             # bounded tool-calling loop
@@ -262,8 +246,12 @@ dialog; denying it leaves the original file untouched.
   are checked on every request.
 - **CSRF guard.** Every state-changing request needs `X-MoodleAI: 1`, which a
   cross-site form cannot set.
-- **No password handling.** Login is manual in Chrome. The app never asks for,
-  reads, types, logs, or stores Moodle credentials.
+- **No Moodle account password handling.** Login is manual in Chrome. The app
+  never asks for, reads, types, logs, or stores your Moodle credentials.
+- **Network credentials are transient.** The one credential field is the optional
+  hidden "Network login" pair for campus HTTP Basic auth. It is passed to Chrome
+  (Playwright `http_credentials`) for that site only, held in memory, cleared on
+  disconnect, and never written to logs, disk, or SQLite.
 - **Read-only Moodle.** No tool can submit, upload, delete, grade, or change
   account settings. Dangerous paths are blocked even if the model asks.
 - **Untrusted course content.** Page/PDF/document text is explicitly labelled as
@@ -300,7 +288,7 @@ $env:RUN_OLLAMA_TESTS="1"
 python -m pytest tests/test_ollama.py -q
 ```
 
-The fast suite covers 80 tests plus 9 skipped tests that need a real browser or
+The fast suite covers 81 tests plus 9 skipped tests that need a real browser or
 the local model. With `RUN_BROWSER_TESTS=1` the browser tests run for real and
 only the Ollama tests remain skipped. The optional browser suite includes:
 
