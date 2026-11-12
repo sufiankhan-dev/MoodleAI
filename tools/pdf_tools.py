@@ -81,7 +81,10 @@ async def read_pdf(ctx: ToolContext, args: ReadPdfArgs) -> dict[str, Any]:
         assignment = ctx.current_assignment()
         if args.save_text and assignment and assignment.get("workspace"):
             base, _relative = assignment_workspace(
-                ctx.jail, assignment.get("course_name", ""), assignment.get("name", "")
+                ctx.jail,
+                assignment.get("course_name", ""),
+                assignment.get("name", ""),
+                ctx.known_courses(),
             )
             stem = sanitize_filename(path.stem, fallback="document", max_length=60)
             target = base / "extracted" / f"{stem}.txt"

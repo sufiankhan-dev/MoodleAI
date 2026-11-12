@@ -62,6 +62,8 @@
     refreshAssignments: $("refreshAssignments"),
     courseList: $("courseList"),
     assignmentList: $("assignmentList"),
+    courseCount: $("courseCount"),
+    assignmentCount: $("assignmentCount"),
     chatTitle: $("chatTitle"),
     chatSubtitle: $("chatSubtitle"),
     newChatBtn: $("newChatBtn"),
@@ -105,6 +107,10 @@
     currentApprovalId: null,
     activity: [],
     files: { workspace: [], generated: [] },
+    openDirs: new Set(),
+    syncing: false,
+    courses: [],
+    assignments: [],
     activeTab: "workspace",
     tools: [],
     connected: false,
@@ -449,6 +455,7 @@
     if (!els.messages) return;
     els.messages.innerHTML = welcomeMarkup;
     els.messages.scrollTop = 0;
+    renderSuggestions();
   }
 
   function createMessage(role, text, options = {}) {
@@ -646,6 +653,157 @@
     showToast("Prompt ready — press Send.");
   }
 
+  // ---------- collapsible cards ----------
+
+  // Per-viewer convenience only: a blocked or empty storage just means every
+  // card starts in its default state.
+  const CARDS_KEY = "moodleai-collapsed";
+  const DEFAULT_COLLAPSED = { activity: true };
+
+  function loadCardPrefs() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(CARDS_KEY) || "{}");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  const cardPrefs = loadCardPrefs();
+
+  function setCardCollapsed(card, collapsed) {
+    card.classList.toggle("collapsed", collapsed);
+    const toggle = card.querySelector(".card-toggle");
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      toggle.title = collapsed ? "Expand" : "Collapse";
+    }
+  }
+
+  function initCards() {
+    document.querySelectorAll(".card[data-card]").forEach((card) => {
+      const key = card.dataset.card;
+      const saved = cardPrefs[key];
+      setCardCollapsed(card, typeof saved === "boolean" ? saved : Boolean(DEFAULT_COLLAPSED[key]));
+      card.querySelector(".card-toggle")?.addEventListener("click", () => {
+        const collapsed = !card.classList.contains("collapsed");
+        setCardCollapsed(card, collapsed);
+        cardPrefs[key] = collapsed;
+        try {
+          localStorage.setItem(CARDS_KEY, JSON.stringify(cardPrefs));
+        } catch (_) {
+          /* ignore */
+        }
+      });
+    });
+  }
+
+  // Once logged in, the connection form is just noise. Fold it away unless the
+  // user has chosen a state for that card themselves.
+  function autoCollapseConnection(loggedIn) {
+    if (typeof cardPrefs.connection === "boolean") return;
+    const card = document.querySelector('.card[data-card="connection"]');
+    if (card) setCardCollapsed(card, loggedIn === true);
+  }
+
+  function setCount(el, value) {
+    if (!el) return;
+    el.textContent = value ? String(value) : "";
+  }
+
+  // ---------- suggestions (built from the synced data) ----------
+
+  function suggestionButton(label, prompt, title) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "suggestion";
+    button.dataset.prompt = prompt;
+    button.textContent = label;
+    button.title = title || prompt;
+    return button;
+  }
+
+  function quoted(name, max) {
+    return `“${truncate(String(name || ""), max)}”`;
+  }
+
+  // "Artificial Intelligence Lab(BS-CYS-5A)" → "Artificial Intelligence Lab":
+  // section codes make every label start the same and truncate identically.
+  function shortCourse(name) {
+    const text = String(name || "").trim();
+    return text.replace(/\s*\([^()]*\)\s*$/, "").trim() || text;
+  }
+
+  function renderSuggestions() {
+    const holder = els.messages?.querySelector("#suggestions");
+    if (!holder) return;
+    holder.replaceChildren();
+
+    const pending = (state.assignments || []).filter((row) => row.pending);
+    const courses = state.courses || [];
+    const items = [];
+
+    if (pending.length) {
+      const lines = pending.slice(0, 12).map((row) => {
+        const due = row.due_text ? ` — due ${row.due_text}` : "";
+        const course = row.course_name ? ` (${row.course_name})` : "";
+        return `- ${row.name}${course}${due}`;
+      });
+      items.push([
+        "What should I do first?",
+        `These are my pending Moodle assignments:\n${lines.join("\n")}\n\nWhich should I work on first, and why? Keep it short.`,
+        "Prioritise your pending assignments",
+      ]);
+
+      const next = pending[0];
+      const inCourse = next.course_name ? ` in "${next.course_name}"` : "";
+      items.push([
+        `Explain ${quoted(next.name, 26)}`,
+        `Open assignment "${next.name}"${inCourse} and explain what I have to do, step by step, in simple language.`,
+      ]);
+      items.push([
+        `Plan ${quoted(next.name, 26)}`,
+        `Open assignment "${next.name}"${inCourse}, read its attached files, and give me a plan with steps to finish it before the deadline.`,
+      ]);
+    }
+
+    const [first, second] = courses;
+    if (first) {
+      items.push([
+        `Summarise ${quoted(shortCourse(first.name), 28)}`,
+        `Open my "${first.name}" course and summarise it: the topics, the materials posted, and any upcoming work.`,
+      ]);
+    }
+    if (second && !pending.length) {
+      items.push([
+        `Study materials in ${quoted(shortCourse(second.name), 24)}`,
+        `Open my "${second.name}" course and list the lecture slides and files I should study first, newest first.`,
+      ]);
+    }
+    if (courses.length > 1 && !pending.length) {
+      items.push([
+        "Any new announcements?",
+        "Check my Moodle dashboard for recent announcements or course updates and summarise anything important.",
+      ]);
+    }
+
+    if (!items.length) {
+      items.push([
+        "List my courses",
+        "List my Moodle courses.",
+        "Works once you are logged in to Moodle in Chrome",
+      ]);
+      items.push([
+        "What can you help with?",
+        "In two or three sentences, what can you help me with in my Moodle courses?",
+      ]);
+    }
+
+    items.slice(0, 4).forEach(([label, prompt, title]) => {
+      holder.appendChild(suggestionButton(label, prompt, title));
+    });
+  }
+
   function courseItem(course) {
     const button = document.createElement("button");
     button.type = "button";
@@ -789,6 +947,9 @@
   }
 
   function renderCourses(courses) {
+    state.courses = Array.isArray(courses) ? courses : [];
+    setCount(els.courseCount, state.courses.length);
+    renderSuggestions();
     if (!els.courseList) return;
     els.courseList.replaceChildren();
     if (!Array.isArray(courses) || !courses.length) {
@@ -802,13 +963,16 @@
   }
 
   function renderAssignments(assignments) {
+    const rows = Array.isArray(assignments) ? assignments.slice() : [];
+    state.assignments = rows;
+    setCount(els.assignmentCount, rows.filter((row) => row.pending).length);
+    renderSuggestions();
     if (!els.assignmentList) return;
     els.assignmentList.replaceChildren();
-    const rows = Array.isArray(assignments) ? assignments.slice() : [];
     if (!rows.length) {
       const empty = document.createElement("p");
       empty.className = "empty";
-      empty.textContent = "Open a course to see assignments.";
+      empty.textContent = "Assignments appear here after you log in and the sync runs.";
       els.assignmentList.appendChild(empty);
       return;
     }
@@ -824,22 +988,47 @@
       if (hoursA !== hoursB) return hoursA - hoursB;
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
-    rows.slice(0, 60).forEach((row) => {
+    const pending = rows.filter((row) => row.pending);
+    const rest = rows.filter((row) => !row.pending);
+
+    pending.slice(0, 60).forEach((row) => {
       els.assignmentList.appendChild(assignmentItem(row));
     });
 
-    if (!rows.some((row) => row.pending)) {
+    if (!pending.length) {
       const empty = document.createElement("p");
       empty.className = "empty";
-      empty.textContent = "No pending assignments in the saved data.";
+      empty.textContent = "Nothing pending. Nice.";
       els.assignmentList.appendChild(empty);
+    }
+
+    // Submitted, graded and unknown-status work stays reachable but folded away.
+    if (rest.length) {
+      const group = document.createElement("details");
+      group.className = "list-group";
+      const summary = document.createElement("summary");
+      summary.textContent = `${rest.length} submitted or no status`;
+      summary.title = "Submitted, graded, or no status reported by Moodle";
+      group.appendChild(summary);
+      rest.slice(0, 60).forEach((row) => group.appendChild(assignmentItem(row)));
+      els.assignmentList.appendChild(group);
     }
   }
 
   function renderSync(info) {
+    const syncing = Boolean(info && (info.running || info.state === "running" || info.phase || info.step));
+    if (syncing !== state.syncing) {
+      state.syncing = syncing;
+      if (state.lastBrowser) updateBrowser(state.lastBrowser);
+    }
     if (!els.syncState) return;
     if (!info) {
       setText(els.syncState, "Not synced yet");
+      return;
+    }
+    if (info.phase === "files" && info.assignment) {
+      const where = info.step && info.total ? ` · course ${info.step}/${info.total}` : "";
+      setText(els.syncState, `Saving ${info.assignment}${where}`);
       return;
     }
     if (info.step && info.total) {
@@ -878,7 +1067,16 @@
     return "📄";
   }
 
-  function treeFiles(nodes, container) {
+  function hasFiles(node) {
+    if (node.type === "file") return true;
+    return Array.isArray(node.children) && node.children.some(hasFiles);
+  }
+
+  // Course folders (depth 0) always show, so every course has its place. Below
+  // that, empty scaffolding folders (code/, pdfs/, submission/…) are hidden
+  // until something is saved in them. Folders start closed and remember what
+  // the user opened across refreshes.
+  function treeFiles(nodes, container, depth = 0) {
     nodes.forEach((node) => {
       if (node.type === "notice") {
         const note = document.createElement("p");
@@ -889,9 +1087,15 @@
       }
 
       if (node.type === "dir") {
+        if (depth > 0 && !hasFiles(node)) return;
+        const key = `${state.activeTab}:${node.path || node.name}`;
         const details = document.createElement("details");
         details.className = "tree-dir";
-        details.open = true;
+        details.open = state.openDirs.has(key);
+        details.addEventListener("toggle", () => {
+          if (details.open) state.openDirs.add(key);
+          else state.openDirs.delete(key);
+        });
 
         const summary = document.createElement("summary");
         const folder = document.createElement("span");
@@ -905,8 +1109,8 @@
 
         const children = document.createElement("div");
         children.className = "tree-children";
-        if (Array.isArray(node.children) && node.children.length) {
-          treeFiles(node.children, children);
+        if (hasFiles(node)) {
+          treeFiles(node.children, children, depth + 1);
         } else {
           const empty = document.createElement("p");
           empty.className = "empty";
@@ -957,8 +1161,8 @@
       empty.className = "empty";
       empty.textContent =
         state.activeTab === "workspace"
-          ? "Assignment materials you save will appear here."
-          : "Files created by the agent will appear here.";
+          ? "Course folders appear here after the first sync."
+          : "Files made outside any course appear here.";
       els.fileTree.appendChild(empty);
       return;
     }
@@ -1071,6 +1275,7 @@
     const loggedIn = browser.logged_in;
 
     state.connected = Boolean(browser.connected);
+    autoCollapseConnection(loggedIn);
 
     const badgeMap = {
       disconnected: { label: "Browser off", kind: "muted", title: "Browser disconnected" },
@@ -1091,7 +1296,8 @@
       unknown: { label: "check login", cls: "state-warn" },
       error: { label: "error", cls: "state-bad" },
     };
-    const conn = connMap[browserState] || connMap.unknown;
+    let conn = connMap[browserState] || connMap.unknown;
+    if (state.syncing && browserState === "ready") conn = { label: "syncing…", cls: "state-warn" };
     if (els.connState) {
       els.connState.className = `state ${conn.cls}`;
       els.connState.textContent = conn.label;
@@ -1692,7 +1898,8 @@
       renderSync(snapshot.sync);
       renderCourses(snapshot.courses);
       renderAssignments(snapshot.assignments);
-      renderFiles(snapshot.files || state.files);
+      state.files = snapshot.files || state.files;
+      renderFiles();
       renderActivity(snapshot.activity);
 
       state.tools = snapshot.tools || [];
@@ -1946,6 +2153,8 @@
 
   // ---------- start ----------
 
+  initCards();
+  renderSuggestions();
   bind();
   setRunning(false);
   setAgentStatus("idle", "Ready");

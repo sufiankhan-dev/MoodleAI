@@ -145,6 +145,12 @@ class AppState:
     async def start_chat(self, message: str, conversation_id: int | None = None) -> tuple[int, str]:
         if self.active_run is not None and self._task is not None and not self._task.done():
             raise BusyError("The agent is already working. Stop it or wait for it to finish.")
+        if self._sync_task is not None and not self._sync_task.done():
+            # The sync reads Moodle through the same Chrome tab the agent drives;
+            # navigating it mid-sync would break the in-page reads.
+            raise BusyError(
+                "Still fetching your Moodle data. Send your message when the sync finishes."
+            )
         cleaned = message.strip()
         if not cleaned:
             raise ValueError("Message is empty")
@@ -427,9 +433,13 @@ class AppState:
             if summary.get("ok")
             else (errors[0] if errors else "Sync found no courses")
         )
+        saved = summary.get("saved", 0)
+        attachments = summary.get("attachments", 0)
+        if summary.get("ok") and (saved or attachments):
+            message += f" · saved {saved} new assignment folder(s), {attachments} file(s)"
         if summary.get("ok") and errors:
             message += f" · {len(errors)} course(s) could not be read"
-        if summary.get("ok") and summary.get("notes"):
+        if summary.get("ok") and summary.get("deadlines_limited"):
             message += " · due-date alerts limited (Moodle calendar unavailable)"
 
         self._sync_info.update(
@@ -481,7 +491,11 @@ class AppState:
 
     @staticmethod
     def _clear_tree(root: Path) -> int:
-        """Delete everything under ``root`` but keep ``.gitkeep`` placeholders.
+        """Delete everything under ``root`` but keep its own ``.gitkeep``.
+
+        Only the top-level placeholder is kept. A ``.gitkeep`` inside a
+        subfolder would otherwise keep that folder alive, so a "cleared"
+        workspace still showed old course folders.
 
         Returns the number of files and directories removed.
         """
@@ -493,7 +507,7 @@ class AppState:
         # Deepest first: files go before the directories that hold them.
         entries = sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True)
         for entry in entries:
-            if entry.name == ".gitkeep":
+            if entry.name == ".gitkeep" and entry.parent == root:
                 continue
             try:
                 if entry.is_dir() and not entry.is_symlink():
@@ -518,6 +532,8 @@ class AppState:
 
         if self.active_run is not None and self._task is not None and not self._task.done():
             raise BusyError("The agent is still working. Stop it before resetting saved data.")
+        if self._sync_task is not None and not self._sync_task.done():
+            raise BusyError("A Moodle sync is still running. Reset after it finishes.")
 
         self.deny_all_approvals()
         counts = self.db.reset_data()

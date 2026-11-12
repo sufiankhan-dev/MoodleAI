@@ -55,6 +55,20 @@ INDEX = """<!doctype html><html><head><title>Assignments</title></head>
 </tbody></table>
 </div></body></html>"""
 
+# An assignment page: the teacher's brief sits in the description; the
+# student's own upload sits in the submission table and must not be fetched.
+ASSIGN_PAGE = """<!doctype html><html><head><title>Course: Database Systems | LMS</title></head>
+<body class="path-mod-assign"><div class="page-header-headings"><h1>Database Systems</h1></div>
+<div id="region-main"><h2>ER Diagram</h2>
+<div class="activity-description" id="intro"><p>Draw the ER diagram for the library system.</p>
+<a href="/pluginfile.php/7/mod_assign/introattachment/0/brief.pdf">brief.pdf</a></div>
+<table class="submissionstatustable"><tr><td>File submissions</td>
+<td><a href="/pluginfile.php/7/assignsubmission_file/submission_files/1/mine.pdf">mine.pdf</a></td></tr></table>
+</div></body></html>"""
+
+PDF_BYTES = b"%PDF-1.4\n% fake brief\n"
+FILE_REQUESTS: list[str] = []
+
 EMPTY_INDEX = """<!doctype html><html><head><title>Assignments</title></head>
 <body class="path-mod-assign"><div id="region-main">
 <h1>Software Engineering</h1><p>No assignments in this course.</p>
@@ -122,9 +136,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?")[0]
+        if path.startswith("/pluginfile.php/"):
+            FILE_REQUESTS.append(path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(PDF_BYTES)))
+            self.end_headers()
+            self.wfile.write(PDF_BYTES)
+            return
         if path == "/mod/assign/index.php":
             course_id = self.path.split("id=")[-1]
             body = INDEX if course_id == "2" else EMPTY_INDEX
+        elif path == "/mod/assign/view.php":
+            body = ASSIGN_PAGE
         else:
             body = DASHBOARD
         payload = body.encode("utf-8")
@@ -165,6 +189,7 @@ def test_sync_reads_status_and_due_dates(tmp_path: Path, mock_moodle: str) -> No
     )
     events: list[tuple[str, str, dict | None]] = []
     SERVICE_CALLS.clear()
+    FILE_REQUESTS.clear()
 
     async def scenario() -> None:
         session = BrowserSession(settings)
@@ -177,6 +202,19 @@ def test_sync_reads_status_and_due_dates(tmp_path: Path, mock_moodle: str) -> No
                 jail=jail,
                 emit=lambda kind, message, data: events.append((kind, message, data)),
             )
+            # A second sync must not rewrite or re-download anything.
+            brief = settings.workspace_dir / "Database Systems" / "ER Diagram" / "attachments" / "brief.pdf"
+            first_mtime = brief.stat().st_mtime_ns
+            again = await sync_courses(
+                browser=session,
+                db=database,
+                settings=settings,
+                jail=jail,
+                emit=lambda *_args: None,
+            )
+            assert again["saved"] == 0
+            assert again["attachments"] == 0
+            assert brief.stat().st_mtime_ns == first_mtime
         finally:
             await session.close()
 
@@ -206,13 +244,30 @@ def test_sync_reads_status_and_due_dates(tmp_path: Path, mock_moodle: str) -> No
         assert calendar["status"] == "not_submitted"
         assert calendar["due_at"] == "2026-11-20T23:59:00+00:00"
 
-        assert len(SERVICE_CALLS) == 1
+        assert len(SERVICE_CALLS) == 2  # one calendar read per sync
         # The session key stays inside the page: it is in no event or summary.
         assert "testsess42" not in json.dumps(summary)
         assert all("testsess42" not in json.dumps(item) for item in events)
         assert database.latest_sync_at() is not None
 
         assert any(kind == "sync" for kind, _message, _data in events)
+
+        # Everything was fetched into one folder per course.
+        workspace = settings.workspace_dir
+        assert (workspace / "Database Systems").is_dir()
+        assert (workspace / "Software Engineering").is_dir()
+        assert summary["folders"] == 2
+        assert summary["saved"] == 3
+        assert summary["attachments"] == 3  # one brief per assignment folder
+        assert len(FILE_REQUESTS) == 3  # and the repeat sync fetched none
+        er = workspace / "Database Systems" / "ER Diagram"
+        brief_md = (er / "instructions" / "assignment.md").read_text(encoding="utf-8")
+        assert "Draw the ER diagram" in brief_md
+        assert (er / "attachments" / "brief.pdf").read_bytes() == PDF_BYTES
+        # The student's own submission file is never downloaded.
+        assert not (er / "attachments" / "mine.pdf").exists()
+        assert all("submission_files" not in request for request in FILE_REQUESTS)
+        assert rows["ER Diagram"]["workspace_path"] == "Database Systems/ER Diagram"
 
     asyncio.run(scenario())
     database.close()

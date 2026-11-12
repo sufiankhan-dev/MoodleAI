@@ -66,18 +66,24 @@ Next.js dashboard while shaving a whole toolchain off the install.
    `browser/profile`.
 4. Log in manually (including SSO/MFA). MoodleAI never sees, types, or stores your
    Moodle account password.
-5. Click **Check login** once the Moodle dashboard is visible. The first status
-   check that sees you logged in starts a **sync** on its own: every course is
-   read, and each assignment's submission status and due date are stored.
-6. Ask in the chat, for example:
-   - “List my courses”
-   - “Show my pending assignments”
-   - “Open Database Systems and explain the latest assignment”
+5. That's it. The dashboard polls Chrome every few seconds (or click **Check
+   login**), and the first check that sees you logged in starts a **sync** on its
+   own. It fetches everything: every course, each assignment's status and due
+   date, each assignment's instructions, and the files the teacher attached. It
+   all lands in one folder per course under `workspace/`.
+6. Ask in the chat. The suggestion chips under the welcome text are built from
+   your synced data (“What should I do first?”, “Explain *your most urgent
+   assignment*”, “Plan …”, “Summarise *a course*”), or type your own, for example:
    - “Download the assignment PDF and summarize the requirements”
    - “Create a Word solution, a PDF summary, and a Python file”
 
-The dashboard shows the current page, saved courses, pending assignments, the
-agent's activity, local files, and any action that needs your approval.
+The dashboard shows saved courses, pending assignments (submitted and graded work
+is folded under a “submitted or no status” row), the agent's activity, your
+course folders, and any action that needs your approval. Every card — Moodle
+connection, Courses, Pending assignments, Files, Activity — collapses from its
+title; the choice is remembered in this browser. Activity starts collapsed, and
+the connection card folds itself once you are logged in (until you open or close
+it yourself).
 
 ### Assignment sync
 
@@ -101,10 +107,27 @@ own session (same cookies, same network auth) and stores what Moodle reports:
   has passed, red **urgent** within 24 h, amber **soon** within 48 h. Roles are
   sorted so overdue and urgent work floats to the top.
 
+- **Course folders and files.** For each course it creates
+  `workspace/<course>/`, named exactly like the Courses list. For each assignment
+  it reads the assignment page in the background and saves
+  `instructions/assignment.md`, `instructions/metadata.json` and
+  `extracted/page.txt`. It then downloads the teacher's attachments from the
+  assignment description into `attachments/`. Your own submitted files (the
+  submission table) are never fetched. The download size limit
+  (`MAX_DOWNLOAD_MB`) applies.
+
+Pages are read with in-page `fetch` through Chrome's own session, so the visible
+tab is never navigated. Files are only ever **created**: an existing file is never
+rewritten, so a repeat sync downloads nothing it already has. Assignments that are
+still pending are re-checked on each sync for files a teacher added later.
+
 Press **Sync** in the Moodle connection panel to re-read everything at any time;
-the hint under the buttons shows progress and any course that could not be read.
-Each sync overwrites the stored status, so a resubmitted assignment stops looking
-pending. There is no background timer: sync runs on login and when you ask.
+the hint under the buttons shows progress (the panel header says “syncing…”
+while it runs). Courses that could not be read, and files that were skipped, are
+listed in the sync summary. While a sync runs, chat messages and `/reset` wait
+for it to finish, because both would disturb the same Chrome tab. Each sync
+overwrites the stored status, so a resubmitted assignment stops looking pending.
+There is no background timer: sync runs on login and when you ask.
 
 ---
 
@@ -113,13 +136,13 @@ pending. There is no background timer: sync runs on login and when you ask.
 | Area | Capability |
 | --- | --- |
 | Moodle reading | Courses, course pages, assignments, due text, submission status, visible page text and links |
-| Assignment sync | On login (and on demand) reads every course's assignment index and stores submission status, due date, and a due-soon/overdue badge — no model involved |
+| Automatic sync | On login (and on demand) reads every course and assignment, stores submission status, due date, and a due-soon/overdue badge, and saves instructions plus teacher attachments into one folder per course — no model involved |
 | Attachments | Download files linked on assignment pages into the assignment workspace |
 | Documents | Read PDFs (PyMuPDF), DOCX/TXT/MD/CSV/JSON/YAML/code |
 | Study help | Explain assignments, break requirements into tasks, work through problems step by step |
 | File generation | Word `.docx`, PDF (Chrome print engine), and safe code/text files |
-| Workspace | Per-course / per-assignment folders with `instructions/`, `attachments/`, `extracted/`, `explanations/`, `code/`, `documents/`, `pdfs/`, `submission/` |
-| UI | Single-page dashboard served by FastAPI: chat with streaming and tool traces, browser status, approvals, file tree/downloads, activity log, light/dark theme |
+| Workspace | One folder per synced course, one per assignment, with `instructions/`, `attachments/`, `extracted/`, `explanations/`, `code/`, `documents/`, `pdfs/`, `submission/`. Course names given by the model or a breadcrumb (“database systems”, “CS301”) resolve to the synced course, so a course never gets a second folder |
+| UI | Single-page dashboard served by FastAPI: chat with streaming, tool traces, and suggestions built from your data; collapsible cards; browser status; approvals; course-folder tree with downloads; activity log; light/dark theme |
 
 ### What it deliberately cannot do
 
@@ -250,7 +273,7 @@ MoodleAI/
 ├── tools/                  # the 14 tools and workspace helpers
 ├── database/               # SQLite repository
 ├── workspace/              # your course material and study files
-├── generated/              # files created without an open assignment
+├── generated/              # files created with no course or assignment open
 ├── logs/                   # rotating local logs
 ├── config/                 # saved Moodle URL (not a password)
 ├── browser/profile/        # persistent Chrome profile (gitignored)
@@ -271,6 +294,12 @@ workspace/Database Systems/Normalization Exercise/
 ├── pdfs/summary.pdf
 └── submission/
 ```
+
+A file created while a course is open but no assignment is goes to
+`workspace/<course>/<code|documents|pdfs>/`; only with nothing open does it land
+in `generated/`. In the dashboard's Files card these are the **Courses** and
+**Other** tabs. Course folders always show; empty scaffolding folders inside an
+assignment stay hidden until something is saved in them.
 
 Nothing silently overwrites an existing file. An overwrite opens the approval
 dialog; denying it leaves the original file untouched.
@@ -325,14 +354,19 @@ $env:RUN_OLLAMA_TESTS="1"
 python -m pytest tests/test_ollama.py -q
 ```
 
-The fast suite covers 113 tests plus 10 skipped tests that need a real browser or
+The fast suite covers 117 tests plus 10 skipped tests that need a real browser or
 the local model. With `RUN_BROWSER_TESTS=1` the browser tests run for real and
-only the Ollama tests remain skipped. The optional browser suite includes:
+only the Ollama tests remain skipped (124 passed, 3 skipped). The optional browser
+suite includes:
 
 - visible Chrome launch, login detection, and host-policy enforcement
 - live Moodle DOM parsing for courses/assignments/assignment details
 - a complete **mock Moodle → PDF download → PDF read → Word/PDF/code files →
   workspace persistence → overwrite denial** workflow
+- the automatic sync against a mock Moodle: statuses, calendar due dates, course
+  folders, saved instructions, the teacher's attachment downloaded and the
+  student's own submission file skipped, and a repeat sync that rewrites and
+  re-downloads nothing
 
 The real-model path was also exercised manually through the dashboard: a plain
 answer, a tool-call round with a recoverable browser error, and an approval
@@ -405,15 +439,18 @@ Local data lives in:
 - `config/app_state.json` — the Moodle URL only (never a password)
 - `browser/profile/` — Chrome session for your Moodle login
 - `workspace/` — course material and generated study files
-- `generated/` — files created without an open assignment
+- `generated/` — files created with no course or assignment open
 - `logs/` — local logs
 
 ### Reset from the chat
 
 Type `/reset` in the chat box and confirm. This clears courses, assignments,
 conversations, messages, activity, approvals and everything under `workspace/`
-and `generated/` (`.gitkeep` placeholders stay). Your saved Moodle URL and the
-Chrome login profile are kept, so you do not have to log in again.
+and `generated/` (only the top-level `.gitkeep` of each stays). Your saved Moodle URL and the
+Chrome login profile are kept, so you do not have to log in again. The command
+is not advertised in the composer any more, but it works the same. A reset is
+refused while a sync is running. After a reset, press **Sync** to fetch
+everything again.
 
 It is also available as `POST /api/reset` with the usual `X-MoodleAI: 1` header,
 and every open dashboard tab refreshes itself when a reset happens.

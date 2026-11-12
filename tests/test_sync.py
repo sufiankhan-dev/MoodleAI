@@ -29,10 +29,12 @@ from browser.moodle import (
     STATUS_UNKNOWN,
     is_pending,
     map_action_events,
+    map_assignment_detail,
     map_assignment_index,
     normalize_submission_status,
     parse_due_at,
 )
+from tools.workspace import canonical_course_name
 
 INDEX_URL = "https://lms.example.edu/mod/assign/index.php?id=2"
 
@@ -317,3 +319,41 @@ def test_unrecognised_status_text_is_shown_verbatim() -> None:
     assert view["status"] == STATUS_UNKNOWN
     assert view["status_label"] == "Eingereicht zur Bewertung"
     assert view["pending"] is False
+
+
+def test_course_names_resolve_to_the_synced_course() -> None:
+    known = ["CS301 Database Systems (Fall 2026)", "Operating Systems", "Systems Lab"]
+    assert canonical_course_name("database systems", known) == known[0]
+    assert canonical_course_name("CS301", known) == known[0]
+    assert canonical_course_name("OPERATING  SYSTEMS", known) == "Operating Systems"
+    # "Systems" matches several courses: ambiguous names are left alone.
+    assert canonical_course_name("Systems", known) == "Systems"
+    assert canonical_course_name("Compilers", known) == "Compilers"
+    assert canonical_course_name("OS", known) == "OS"
+    assert canonical_course_name("", known) == ""
+
+
+def test_background_assignment_page_keeps_only_teacher_files() -> None:
+    detail = map_assignment_detail(
+        {
+            "title": "Normalization Exercise | LMS",
+            "name": "",
+            "intro": "Normalise the schema to 3NF.",
+            "activity_info": "Opened: Monday",
+            "due": "Due: Sunday",
+            "submission": "No attempt",
+            "text": "Normalization Exercise Normalise the schema to 3NF.",
+            "attachments": [
+                {
+                    "text": "brief.pdf",
+                    "href": "https://lms.example.edu/pluginfile.php/5/mod_assign/intro/brief.pdf",
+                },
+                {"text": "elsewhere", "href": "https://lms.example.edu/mod/forum/view.php?id=3"},
+                "junk",
+            ],
+        }
+    )
+    assert detail["name"] == "Normalization Exercise"
+    assert "3NF" in detail["instructions"]
+    assert "Opened: Monday" in detail["instructions"]
+    assert [item["text"] for item in detail["attachments"]] == ["brief.pdf"]

@@ -38,11 +38,12 @@
 
     <main class="layout">
       <aside class="sidebar">
-        <section class="card connection-card">
+        <section class="card connection-card" data-card="connection">
           <div class="card-head">
-            <h2>Moodle connection</h2>
+            <h2><button class="card-toggle" type="button" aria-expanded="true" aria-controls="connectionBody">Moodle connection</button></h2>
             <span id="connState" class="state state-off">disconnected</span>
           </div>
+          <div class="card-body" id="connectionBody">
           <label for="moodleUrl">Moodle URL</label>
           <div class="input-row">
             <input id="moodleUrl" type="url" placeholder="https://lms.dsu.edu.pk/" autocomplete="off" spellcheck="false">
@@ -64,30 +65,35 @@
             <div class="page-url" id="pageUrl">—</div>
             <div class="page-actions">
               <button id="checkLoginBtn" class="btn btn-ghost small" type="button">Check login</button>
-              <button id="syncBtn" class="btn btn-ghost small" type="button" title="Read courses, statuses, and due dates from Moodle">Sync</button>
+              <button id="syncBtn" class="btn btn-ghost small" type="button" title="Fetch courses, assignments, instructions, and files from Moodle">Sync</button>
               <button id="disconnectBtn" class="btn btn-ghost small" type="button">Disconnect</button>
             </div>
             <p id="syncState" class="hint">Not synced yet</p>
           </div>
+          </div>
         </section>
 
-        <section class="card">
+        <section class="card" data-card="courses">
           <div class="card-head">
-            <h2>Courses</h2>
+            <h2><button class="card-toggle" type="button" aria-expanded="true" aria-controls="coursesBody">Courses <span id="courseCount" class="count"></span></button></h2>
             <button class="icon-btn" id="refreshCourses" type="button" aria-label="Refresh courses" title="Refresh">↻</button>
           </div>
-          <div id="courseList" class="list">
-            <p class="empty">Connect to Moodle and log in to sync your courses.</p>
+          <div class="card-body" id="coursesBody">
+            <div id="courseList" class="list">
+              <p class="empty">Connect to Moodle and log in to sync your courses.</p>
+            </div>
           </div>
         </section>
 
-        <section class="card">
+        <section class="card" data-card="assignments">
           <div class="card-head">
-            <h2>Pending assignments</h2>
+            <h2><button class="card-toggle" type="button" aria-expanded="true" aria-controls="assignmentsBody">Pending assignments <span id="assignmentCount" class="count"></span></button></h2>
             <button class="icon-btn" id="refreshAssignments" type="button" aria-label="Refresh assignments" title="Refresh">↻</button>
           </div>
-          <div id="assignmentList" class="list">
-            <p class="empty">Open a course to see assignments.</p>
+          <div class="card-body" id="assignmentsBody">
+            <div id="assignmentList" class="list">
+              <p class="empty">Open a course to see assignments.</p>
+            </div>
           </div>
         </section>
       </aside>
@@ -105,11 +111,8 @@
           <div class="welcome">
             <div class="welcome-mark" aria-hidden="true">M</div>
             <h2>Your Moodle, with a local brain.</h2>
-            <p>I can open your courses in a visible Chrome window, read assignments, explain them, and prepare files. Everything runs on your laptop.</p>
-            <div class="suggestions">
-              <button class="suggestion" type="button" data-prompt="Open my Database Systems course">Open Database Systems</button>
-              <button class="suggestion" type="button" data-prompt="Explain my latest assignment in simple language">Explain an assignment</button>
-            </div>
+            <p>Log in once and your courses, assignments, instructions, and files are fetched automatically. Ask about any of them — everything runs on your laptop.</p>
+            <div class="suggestions" id="suggestions"></div>
           </div>
         </div>
 
@@ -121,33 +124,36 @@
         </form>
         <div class="composer-meta">
           <span id="agentActivity">Ready</span>
-          <span class="composer-hint" title="Clear saved courses, assignments, chats and files">Type <code>/reset</code> to clear saved data</span>
           <span id="modelMeta">qwen3:8b · local</span>
         </div>
       </section>
 
       <aside class="rail">
-        <section class="card files-card">
+        <section class="card files-card" data-card="files">
           <div class="card-head">
-            <h2>Files</h2>
+            <h2><button class="card-toggle" type="button" aria-expanded="true" aria-controls="filesBody">Files</button></h2>
             <button class="icon-btn" id="refreshFiles" type="button" aria-label="Refresh files" title="Refresh">↻</button>
           </div>
-          <div class="tabs" role="tablist">
-            <button class="tab active" data-tab="workspace" role="tab" aria-selected="true" type="button">Workspace</button>
-            <button class="tab" data-tab="generated" role="tab" aria-selected="false" type="button">Generated</button>
-          </div>
-          <div id="fileTree" class="file-tree">
-            <p class="empty">Assignment files will appear here.</p>
+          <div class="card-body" id="filesBody">
+            <div class="tabs" role="tablist">
+              <button class="tab active" data-tab="workspace" role="tab" aria-selected="true" type="button">Courses</button>
+              <button class="tab" data-tab="generated" role="tab" aria-selected="false" type="button">Other</button>
+            </div>
+            <div id="fileTree" class="file-tree">
+              <p class="empty">Course folders appear here after the first sync.</p>
+            </div>
           </div>
         </section>
 
-        <section class="card activity-card">
+        <section class="card activity-card" data-card="activity">
           <div class="card-head">
-            <h2>Activity</h2>
+            <h2><button class="card-toggle" type="button" aria-expanded="true" aria-controls="activityBody">Activity</button></h2>
             <span id="activityCount" class="pill pill-muted"></span>
           </div>
-          <div id="activityLog" class="activity-log" aria-live="polite">
-            <p class="empty">Agent activity will appear here.</p>
+          <div class="card-body" id="activityBody">
+            <div id="activityLog" class="activity-log" aria-live="polite">
+              <p class="empty">Agent activity will appear here.</p>
+            </div>
           </div>
         </section>
       </aside>

@@ -180,7 +180,9 @@ async def download_attachment(ctx: ToolContext, args: DownloadArgs) -> dict[str,
         if guessed:
             filename += guessed
 
-    base, relative = assignment_workspace(ctx.jail, course_name, assignment_name)
+    base, relative = assignment_workspace(
+        ctx.jail, course_name, assignment_name, ctx.known_courses()
+    )
     target = base / "attachments" / filename
 
     if target.exists():

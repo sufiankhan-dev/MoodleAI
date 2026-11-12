@@ -153,3 +153,39 @@ def test_overwrite_requires_approval(tmp_path: Path) -> None:
     assert "SELECT 2;" in (ctx.settings.workspace_dir / second["path"]).read_text(
         encoding="utf-8"
     )
+
+
+def test_files_follow_the_synced_course_folder(tmp_path: Path) -> None:
+    """A model-invented or short course name must not create a second folder."""
+
+    ctx = _context(tmp_path)
+    ctx.db.upsert_course(
+        "CS301 Database Systems (Fall 2026)",
+        "https://lms.example.edu/course/view.php?id=2",
+        "2",
+    )
+    ctx.state["current_assignment"]["course_name"] = "database systems"
+    result = asyncio.run(
+        create_code_file(ctx, CreateCodeArgs(filename="schema.sql", code="SELECT 1;"))
+    )
+    assert result["path"] == (
+        "CS301 Database Systems (Fall 2026)/Normalization Exercise/code/schema.sql"
+    )
+
+
+def test_course_open_without_assignment_saves_into_the_course(tmp_path: Path) -> None:
+    ctx = _context(tmp_path)
+    ctx.state.pop("current_assignment")
+    ctx.state["current_course"] = {"name": "Database Systems"}
+    result = asyncio.run(
+        create_code_file(ctx, CreateCodeArgs(filename="notes.sql", code="SELECT 1;"))
+    )
+    assert result["path"] == "Database Systems/code/notes.sql"
+    assert (ctx.settings.workspace_dir / result["path"]).exists()
+
+    ctx.state.pop("current_course")
+    loose = asyncio.run(
+        create_code_file(ctx, CreateCodeArgs(filename="loose.sql", code="SELECT 1;"))
+    )
+    assert loose["path"] == "code/loose.sql"
+    assert (ctx.settings.generated_dir / loose["path"]).exists()

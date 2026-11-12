@@ -3,26 +3,39 @@
 The app runs this on its own initiative (after the user logs in, or from the
 Sync button); the model never triggers it, so the tool registry stays the
 model's only surface. Everything here is read-only against Moodle: it reads the
-course list and each course's assignment index, and nothing else. It never
-touches ``workspace/``, so no approval gate is involved — only local database
-rows are written.
+course list, each course's assignment index, each assignment page, and the
+teacher's files attached to those pages, and nothing else. Pages are read with
+in-page ``fetch`` so the user's visible tab is never navigated.
+
+Locally it writes database rows and, under ``workspace/``, one folder per
+course with one folder per assignment (instructions, metadata, page text,
+attachments). It only ever creates files: an existing file is never
+overwritten, so the approval gate (which guards overwrites) is never needed.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from app.config import Settings
-from app.security import PathJail
+from app.security import (
+    PathJail,
+    UrlSecurityError,
+    sanitize_filename,
+    validate_http_url,
+)
 from browser.moodle import (
     STATUS_LABELS,
     STATUS_UNKNOWN,
     MoodleLoginLost,
     MoodleParseError,
     fetch_assign_deadlines,
+    fetch_assignment_detail,
     fetch_assignment_index,
     is_pending,
     map_assignment_index,
@@ -30,7 +43,10 @@ from browser.moodle import (
 )
 from browser.session import BrowserError, BrowserSession
 from database.db import Database
+from tools.attachment_tools import _filename_from_url, filename_from_disposition
 from tools.base import ToolContext, ToolError
+from tools.file_utils import write_bytes_atomic
+from tools.workspace import assignment_workspace, course_folder, save_assignment_bundle
 
 # Private on purpose: the dashboard reuses the exact discovery the model uses
 # (five fallback pages, fullname resolution) instead of a second implementation.
@@ -55,6 +71,11 @@ URGENCY_RANK = {
 
 _PER_COURSE_TIMEOUT_S = 20.0
 _DEADLINES_TIMEOUT_S = 30.0
+_PER_ASSIGNMENT_TIMEOUT_S = 20.0
+_PER_FILE_TIMEOUT_S = 60.0
+
+#: The bundle file whose presence means "this assignment was already saved".
+_BUNDLE_MARKER = Path("instructions") / "assignment.md"
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -146,9 +167,164 @@ def _empty_summary(started_at: datetime) -> dict[str, Any]:
         "assignments": 0,
         "pending": 0,
         "deadlines": 0,
+        "folders": 0,
+        "saved": 0,
+        "attachments": 0,
+        "deadlines_limited": False,
         "errors": [],
         "notes": [],
     }
+
+
+async def _download_attachment(
+    *,
+    browser: BrowserSession,
+    settings: Settings,
+    jail: PathJail,
+    db: Database,
+    url: str,
+    link_text: str,
+    target_dir: Path,
+    assignment_id: int | None,
+) -> str | None:
+    """Fetch one teacher file into ``target_dir``; never overwrite.
+
+    Returns the saved workspace-relative path, or ``None`` when the file was
+    already there. Raises ``MoodleParseError`` with a user-facing reason.
+    """
+
+    try:
+        url = validate_http_url(url, allow_loopback=True)
+    except UrlSecurityError as exc:
+        raise MoodleParseError(f"blocked link ({exc})") from exc
+    if not browser.policy.permits(url):
+        raise MoodleParseError("file is not hosted on your Moodle site")
+
+    # pluginfile URLs end in the real filename, so a repeat sync can skip the
+    # download entirely instead of fetching bytes it will not write.
+    guessed = _filename_from_url(url)
+    if guessed != "attachment":
+        if (target_dir / sanitize_filename(guessed, fallback="attachment")).exists():
+            return None
+
+    try:
+        response = await browser.page.request.get(url, timeout=settings.browser_timeout_ms)
+    except Exception as exc:
+        raise MoodleParseError(f"download failed ({exc})") from exc
+    if response.status >= 400:
+        raise MoodleParseError(f"Moodle returned HTTP {response.status}")
+    headers = response.headers
+    content_type = headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type in {"text/html", "application/xhtml+xml"}:
+        raise MoodleParseError("Moodle returned a page instead of a file")
+    length = headers.get("content-length")
+    if length and length.isdigit() and int(length) > settings.max_download_bytes:
+        raise MoodleParseError(f"larger than the {settings.max_download_mb} MB limit")
+    body = await response.body()
+    if len(body) > settings.max_download_bytes:
+        raise MoodleParseError(f"larger than the {settings.max_download_mb} MB limit")
+
+    suggested = (
+        filename_from_disposition(headers.get("content-disposition"))
+        or (guessed if guessed != "attachment" else "")
+        or link_text
+        or "attachment"
+    )
+    filename = sanitize_filename(suggested, fallback="attachment")
+    if "." not in filename:
+        extension = mimetypes.guess_extension(content_type or "")
+        if extension:
+            filename += extension
+    target = target_dir / filename
+    if target.exists():
+        return None
+    write_bytes_atomic(target, body)
+    relative = jail.relative("workspace", target)
+    db.record_file(relative, len(body), "attachment", assignment_id)
+    return relative
+
+
+async def _save_assignment_files(
+    *,
+    browser: BrowserSession,
+    db: Database,
+    settings: Settings,
+    jail: PathJail,
+    course_name: str,
+    course_id: str,
+    row: dict[str, Any],
+    assignment_id: int,
+    summary: dict[str, Any],
+) -> None:
+    """Save one assignment's instructions and teacher files into its folder.
+
+    New assignments are always read. Already-saved ones are re-read only while
+    still pending, to pick up files a teacher added later. Nothing that exists
+    is rewritten.
+    """
+
+    base, relative = assignment_workspace(jail, course_name, row["name"])
+    already_saved = (base / _BUNDLE_MARKER).exists()
+    if already_saved and not row.get("pending"):
+        db.set_assignment_workspace(assignment_id, relative)
+        return
+
+    detail = await asyncio.wait_for(
+        fetch_assignment_detail(browser.page, row["url"], max_chars=settings.max_page_chars),
+        timeout=_PER_ASSIGNMENT_TIMEOUT_S,
+    )
+
+    if not already_saved:
+        bundle = save_assignment_bundle(
+            jail,
+            course_name=course_name,
+            assignment_name=row["name"],
+            instructions=detail.get("instructions", ""),
+            full_text=detail.get("full_text", ""),
+            metadata={
+                "url": row["url"],
+                "due_text": row.get("due_text") or detail.get("due_text", ""),
+                "due_at": row.get("due_at") or "",
+                "submission_status_text": row.get("status_text")
+                or detail.get("submission_status_text", ""),
+                "attachments": detail.get("attachments", []),
+                "course_id": course_id,
+                "activity_id": row.get("activity_id"),
+                "source": "sync",
+            },
+        )
+        for label in ("instructions_path", "metadata_path", "page_text_path"):
+            path = bundle[label]
+            if path.split("/", 2)[-1] in bundle["created"]:
+                absolute = jail.resolve("workspace", path, must_exist=True)
+                db.record_file(path, absolute.stat().st_size, "workspace", assignment_id)
+        summary["saved"] += 1
+    db.set_assignment_workspace(assignment_id, relative)
+
+    for link in detail.get("attachments", []):
+        try:
+            saved = await asyncio.wait_for(
+                _download_attachment(
+                    browser=browser,
+                    settings=settings,
+                    jail=jail,
+                    db=db,
+                    url=link["href"],
+                    link_text=link.get("text", ""),
+                    target_dir=base / "attachments",
+                    assignment_id=assignment_id,
+                ),
+                timeout=_PER_FILE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            summary["notes"].append(f"{row['name']}: a file took too long to download.")
+            continue
+        except MoodleParseError as exc:
+            label = link.get("text") or "attachment"
+            summary["notes"].append(f"{row['name']}: {label} not saved ({exc}).")
+            continue
+        if saved:
+            summary["attachments"] += 1
 
 
 async def sync_courses(
@@ -214,6 +390,7 @@ async def sync_courses(
         )
     except (MoodleParseError, asyncio.TimeoutError) as exc:
         logger.info("Moodle deadline list unavailable: %s", exc)
+        summary["deadlines_limited"] = True
         summary["notes"].append(
             f"Due-date alerts are limited: {exc or 'the deadline list timed out.'}"
         )
@@ -253,13 +430,14 @@ async def sync_courses(
         if not isinstance(db_course_id, int):
             db_course_id = db.upsert_course(name, str(course.get("url") or ""), course_id)
 
+        stored: list[tuple[dict[str, Any], int]] = []
         for row in rows:
             if not row.get("due_at") and row["url"] in deadlines:
                 row["due_at"] = deadlines[row["url"]]
                 summary["deadlines"] += 1
             elif row.get("due_at"):
                 summary["deadlines"] += 1
-            db.record_synced_assignment(
+            assignment_id = db.record_synced_assignment(
                 db_course_id,
                 row["name"],
                 row["url"],
@@ -268,10 +446,63 @@ async def sync_courses(
                 status=row.get("status") or STATUS_UNKNOWN,
                 status_text=row.get("status_text") or None,
             )
+            stored.append((row, assignment_id))
 
         summary["courses"] += 1
         summary["assignments"] += len(rows)
         summary["pending"] += sum(1 for row in rows if row.get("pending"))
+
+        # One folder per course, named exactly like the Courses list, then each
+        # assignment's instructions and teacher files inside it.
+        try:
+            course_folder(jail, name)
+            summary["folders"] += 1
+        except Exception as exc:  # a jail refusal must not abort the sync
+            summary["notes"].append(f"{name}: folder not created ({exc}).")
+            continue
+
+        login_lost = False
+        for index, (row, assignment_id) in enumerate(stored, start=1):
+            if stopped():
+                break
+            emit(
+                "sync",
+                f"Saving files: {row['name']} ({name})",
+                {
+                    "phase": "files",
+                    "course": name,
+                    "assignment": row["name"],
+                    "step": step,
+                    "total": len(courses),
+                    "item": index,
+                    "items": len(stored),
+                },
+            )
+            try:
+                await _save_assignment_files(
+                    browser=browser,
+                    db=db,
+                    settings=settings,
+                    jail=jail,
+                    course_name=name,
+                    course_id=course_id,
+                    row=row,
+                    assignment_id=assignment_id,
+                    summary=summary,
+                )
+            except MoodleLoginLost as exc:
+                summary["errors"].append(str(exc))
+                login_lost = True
+                break
+            except (MoodleParseError, asyncio.TimeoutError) as exc:
+                summary["notes"].append(
+                    f"{row['name']}: page not saved ({exc or 'timed out'})."
+                )
+            except Exception as exc:  # e.g. a jail refusal on an odd name
+                logger.warning("Could not save files for %s", row["name"], exc_info=True)
+                summary["notes"].append(f"{row['name']}: files not saved ({exc}).")
+        if login_lost:
+            break
 
     logger.info(
         "Moodle sync finished: %s courses, %s assignments, %s errors",

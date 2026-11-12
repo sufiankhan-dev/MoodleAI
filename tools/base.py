@@ -99,6 +99,14 @@ class ToolContext:
         assignment = self.state.get("current_assignment")
         return assignment if isinstance(assignment, dict) else None
 
+    def known_courses(self) -> list[str]:
+        """Synced course names, so workspace folders match the Courses list."""
+        try:
+            return [str(row["name"]) for row in self.db.list_courses() if row.get("name")]
+        except Exception:
+            logger.debug("Could not read known courses", exc_info=True)
+            return []
+
 
 @dataclass(frozen=True)
 class ToolSpec:

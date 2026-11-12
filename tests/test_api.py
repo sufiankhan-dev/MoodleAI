@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import time
 from dataclasses import replace
@@ -133,9 +134,11 @@ def test_network_credentials_are_transient_only(api) -> None:
     assert "http_password: httpPassword" in script
     assert 'els.httpPass.value = ""' in script
 
-    # Nothing is persisted: storage is used for the theme preference only.
-    assert script.count("localStorage.setItem") == 1
-    assert "localStorage.setItem(THEME_KEY" in script
+    # Nothing sensitive is persisted: storage holds only the theme and which
+    # cards are collapsed, each under its own fixed key.
+    keys = re.findall(r"localStorage\.setItem\(\s*([A-Za-z_]+)", script)
+    assert sorted(keys) == ["CARDS_KEY", "THEME_KEY"]
+    assert 'const CARDS_KEY = "moodleai-collapsed"' in script
     assert "sessionStorage" not in script
 
 
@@ -312,6 +315,10 @@ def test_reset_endpoint_clears_data_and_keeps_login(api) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "notes.txt").write_text("notes", encoding="utf-8")
     (settings.workspace_dir / ".gitkeep").write_text("", encoding="utf-8")
+    # A stray placeholder inside a course folder must not keep that folder alive.
+    stray = settings.workspace_dir / "Software Engineering"
+    stray.mkdir(parents=True, exist_ok=True)
+    (stray / ".gitkeep").write_text("", encoding="utf-8")
 
     blocked = client.post("/api/reset", json={})
     assert blocked.status_code == 403
@@ -338,6 +345,7 @@ def test_reset_endpoint_clears_data_and_keeps_login(api) -> None:
     # Placeholders and the saved Moodle URL survive, so no re-login is needed.
     assert (settings.workspace_dir / ".gitkeep").exists()
     assert not folder.exists()
+    assert not stray.exists()
     assert client.get("/api/state").json()["moodle_url"] == "https://moodle.example.edu/"
 
 

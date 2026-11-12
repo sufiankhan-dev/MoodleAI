@@ -549,11 +549,79 @@ a:hover {
 }
 
 .card-head h2 {
+  display: flex;
+  min-width: 0;
   margin: 0;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--foreground);
+}
+
+/* Collapsible cards: the title is the toggle; the state is remembered. */
+.card-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: calc(var(--radius) - 6px);
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card-toggle::before {
+  content: "▸";
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  transform: rotate(90deg);
+  transition: transform 0.12s ease;
+}
+
+.card-toggle[aria-expanded="false"]::before {
+  transform: none;
+}
+
+.card-toggle:hover {
+  color: var(--muted-foreground);
+}
+
+.card-toggle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.card-toggle .count {
+  color: var(--muted-foreground);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.card.collapsed .card-body {
+  display: none;
+}
+
+.card.collapsed .card-head {
+  margin-bottom: 0;
+}
+
+.files-card.collapsed,
+.activity-card.collapsed {
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .muted {
@@ -766,6 +834,40 @@ input[type="password"]:focus {
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
+}
+
+.list-group {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.list-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 4px 5px;
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.list-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.list-group > summary::before {
+  content: "▸";
+  font-size: 9px;
+  transition: transform 0.12s ease;
+}
+
+.list-group[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.list-group > summary:hover {
+  color: var(--foreground);
 }
 
 .list-item {

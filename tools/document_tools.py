@@ -20,7 +20,7 @@ from pydantic import Field
 from app.security import sanitize_filename
 from tools.base import StrictArgs, ToolContext, ToolError, ToolRegistry, ToolSpec
 from tools.file_utils import resolve_input_path, write_text_atomic
-from tools.workspace import assignment_workspace
+from tools.workspace import assignment_workspace, canonical_course_name, course_folder
 
 _CODE_EXTENSIONS = {
     ".py": "python",
@@ -281,9 +281,22 @@ def _output_target(
     assignment = ctx.current_assignment()
     if assignment and assignment.get("workspace"):
         base, relative_base = assignment_workspace(
-            ctx.jail, assignment.get("course_name", ""), assignment.get("name", "")
+            ctx.jail,
+            assignment.get("course_name", ""),
+            assignment.get("name", ""),
+            ctx.known_courses(),
         )
         target = base / kind / name
+        return target, f"{relative_base}/{kind}/{name}", "workspace"
+    course = ctx.current_course()
+    if course and course.get("name"):
+        # A course is open but no assignment: keep the file with that course
+        # instead of a loose generated/<kind>/ folder.
+        folder, relative_base = course_folder(
+            ctx.jail, canonical_course_name(course["name"], ctx.known_courses())
+        )
+        target = folder / kind / name
+        target.parent.mkdir(parents=True, exist_ok=True)
         return target, f"{relative_base}/{kind}/{name}", "workspace"
     base = ctx.jail.root("generated") / kind
     base.mkdir(parents=True, exist_ok=True)
@@ -356,7 +369,10 @@ async def read_document(ctx: ToolContext, args: ReadDocumentArgs) -> dict[str, A
     assignment = ctx.current_assignment()
     if args.save_text and assignment and assignment.get("workspace") and text:
         base, _relative = assignment_workspace(
-            ctx.jail, assignment.get("course_name", ""), assignment.get("name", "")
+            ctx.jail,
+            assignment.get("course_name", ""),
+            assignment.get("name", ""),
+            ctx.known_courses(),
         )
         stem = sanitize_filename(path.stem, fallback="document", max_length=60)
         target = base / "extracted" / f"{stem}.txt"

@@ -818,6 +818,124 @@ async def fetch_assignment_index(page: Page, url: str) -> dict[str, Any]:
     return raw
 
 
+_ASSIGN_DETAIL_JS = r"""
+async (url) => {
+  const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  let response;
+  try {
+    response = await fetch(url, {credentials: 'same-origin', redirect: 'follow'});
+  } catch (error) {
+    return {error: 'request_failed'};
+  }
+  if (response.url && /\/login\//i.test(response.url)) return {login: true};
+  if (!response.ok) return {error: 'http_' + response.status};
+  const html = await response.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  if ((doc.body.className || '').includes('path-login')) return {login: true};
+  doc.querySelectorAll('script, style, noscript').forEach((node) => node.remove());
+
+  const base = response.url || url;
+  const text = (selector) => {
+    const node = doc.querySelector(selector);
+    return node ? clean(node.textContent) : '';
+  };
+  const root = doc.querySelector('#region-main, [role="main"], #maincontent, main') || doc.body;
+  // In Moodle 4 the page header h1 is the course; the activity name is inside main.
+  const heading = root.querySelector('h1, h2');
+
+  // Only the teacher's files: the description and its attachment list. Links in
+  // the submission or feedback area are the student's own uploads.
+  const attachments = [];
+  const seen = new Set();
+  doc.querySelectorAll(
+    '#intro, [data-region="activity-description"], .activity-description, .introattachments'
+  ).forEach((region) => {
+    region.querySelectorAll('a[href*="pluginfile.php"]').forEach((a) => {
+      if (a.closest('.submissionstatustable, .feedback, [data-region="submission-status"]')) return;
+      let href = '';
+      try { href = new URL(a.getAttribute('href') || '', base).href; } catch (error) { return; }
+      if (!/^https?:/i.test(href) || seen.has(href)) return;
+      seen.add(href);
+      attachments.push({text: clean(a.textContent).slice(0, 250), href});
+    });
+  });
+
+  return {
+    title: clean(doc.title),
+    name: heading ? clean(heading.textContent) : '',
+    intro: text('#intro, [data-region="activity-description"], .activity-description'),
+    activity_info: text('[data-region="activity-information"]'),
+    due: text('[data-region="activity-dates"], .duedate, #assign_due_date'),
+    submission: text('.submissionstatustable, [data-region="submission-status"]'),
+    text: clean(root.textContent),
+    attachments: attachments.slice(0, 30)
+  };
+}
+"""
+
+
+def map_assignment_detail(raw: dict[str, Any], *, max_chars: int = 14000) -> dict[str, Any]:
+    """Shape a background-fetched assignment page like :func:`parse_assignment_detail`."""
+
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        name = re.sub(r"\s*\|\s*.*$", "", str(raw.get("title") or "")).strip()
+    instructions = "\n\n".join(
+        part
+        for part in (
+            truncate_text(str(raw.get("intro") or ""), 6000),
+            truncate_text(str(raw.get("activity_info") or ""), 4000),
+        )
+        if part
+    )
+    attachments = []
+    for link in raw.get("attachments", []):
+        if not isinstance(link, dict):
+            continue
+        href = str(link.get("href") or "")
+        if "pluginfile.php" not in urlparse(href).path:
+            continue
+        attachments.append(
+            {"text": str(link.get("text") or "")[:250], "href": href, "kind": "attachment"}
+        )
+    return {
+        "name": name[:250],
+        "due_text": truncate_text(str(raw.get("due") or ""), 1000),
+        "submission_status_text": truncate_text(str(raw.get("submission") or ""), 2000),
+        "instructions": instructions[:10000],
+        "attachments": attachments[:30],
+        "full_text": truncate_text(str(raw.get("text") or ""), max_chars),
+    }
+
+
+async def fetch_assignment_detail(
+    page: Page, url: str, *, max_chars: int = 14000
+) -> dict[str, Any]:
+    """Read one assignment page in the background, without navigating the tab.
+
+    Same approach as :func:`fetch_assignment_index`: Chrome's own session does
+    the request, and only ``/mod/assign/view.php`` is ever fetched.
+    """
+
+    if "/mod/assign/view.php" not in urlparse(url).path.lower():
+        raise MoodleParseError("Only assignment pages can be read in the background.")
+    try:
+        raw = await page.evaluate(_ASSIGN_DETAIL_JS, url)
+    except PlaywrightTimeoutError as exc:
+        raise MoodleParseError("The assignment page did not load in time.") from exc
+    except Exception as exc:  # Playwright's Error hierarchy differs by version
+        raise MoodleParseError(f"Could not read the assignment page: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise MoodleParseError("Unexpected assignment page result.")
+    if raw.get("login"):
+        raise MoodleLoginLost(
+            "Moodle asked you to log in again. Finish logging in manually in Chrome."
+        )
+    if raw.get("error"):
+        raise MoodleParseError(f"The assignment page could not be read ({raw.get('error')}).")
+    return map_assignment_detail(raw, max_chars=max_chars)
+
+
 # The Timeline block's own data source. Only this one read-only web service is
 # ever called; the method name is fixed here and never comes from the model.
 ACTION_EVENTS_METHOD = "core_calendar_get_action_events_by_timesort"

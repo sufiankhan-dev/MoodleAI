@@ -35,7 +35,11 @@ from tools.base import (
     ToolRegistry,
     ToolSpec,
 )
-from tools.workspace import assignment_workspace, save_assignment_bundle
+from tools.workspace import (
+    assignment_workspace,
+    canonical_course_name,
+    save_assignment_bundle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -601,7 +605,24 @@ async def open_assignment(ctx: ToolContext, args: OpenAssignmentArgs) -> dict[st
 
     detail = parse_assignment_detail(snapshot)
     course = ctx.current_course() or {"name": detail.get("course_name") or "Uncategorised course"}
-    course_name = detail.get("course_name") or course.get("name") or "Uncategorised course"
+    known = ctx.known_courses()
+    # The synced row knows the real course; a breadcrumb may only show a short
+    # code, which used to create a second folder for the same course.
+    synced_course = next(
+        (
+            row.get("course_name")
+            for row in ctx.db.list_assignments()
+            if row.get("url") == match["url"] and row.get("course_name")
+        ),
+        None,
+    )
+    course_name = canonical_course_name(
+        synced_course
+        or course.get("name")
+        or detail.get("course_name")
+        or "Uncategorised course",
+        known,
+    )
     assignment_name = detail.get("name") or match["name"]
 
     db_id = ctx.db.upsert_assignment(
@@ -675,6 +696,8 @@ async def save_assignment_workspace(ctx: ToolContext, args: SaveWorkspaceArgs) -
         current_assignment or {}
     ).get("course_name") or (current_course or {}).get("name", "")
     assignment_name = args.assignment_name.strip() or (current_assignment or {}).get("name", "")
+    known = ctx.known_courses()
+    course_name = canonical_course_name(course_name, known)
     if not course_name or not assignment_name:
         raise ToolError(
             "I need both a course name and an assignment name to create the workspace. "
