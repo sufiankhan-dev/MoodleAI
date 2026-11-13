@@ -20,6 +20,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from app.security import redact_url
 from browser.moodle import (
     course_name_from_heading,
+    is_ignored_course,
     is_placeholder_course_name,
     looks_like_course_code,
     parse_assignment_detail,
@@ -313,6 +314,9 @@ async def _load_courses(ctx: ToolContext) -> list[dict[str, Any]]:
             if courses:
                 await _resolve_course_names(ctx, courses)
                 ctx.db.prune_site_course()
+                ctx.db.prune_courses(
+                    row["id"] for row in ctx.db.list_courses() if is_ignored_course(row["url"])
+                )
                 for course in courses:
                     course["db_id"] = ctx.db.upsert_course(
                         course["name"], course["url"], course.get("course_id")

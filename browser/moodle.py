@@ -255,6 +255,20 @@ def _course_key(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?id={course_id}"
 
 
+#: Courses the owner asked to hide everywhere, as (host, Moodle course id).
+#: "Programming Fundamentals Lab (BS-SE-1B)" shows on the dashboard but is not
+#: one of the owner's courses.
+IGNORED_COURSES: frozenset[tuple[str, str]] = frozenset({("lms.dsu.edu.pk", "6870")})
+
+
+def is_ignored_course(url: str) -> bool:
+    """True when ``url`` is a course page the owner asked to ignore."""
+
+    parsed = urlparse(url or "")
+    course_id = parse_qs(parsed.query).get("id", [""])[0]
+    return (parsed.netloc.lower(), course_id) in IGNORED_COURSES
+
+
 _CODE_LABEL = re.compile(r"[A-Z0-9][A-Z0-9 \-_/.()]*")
 _LOWERCASE_WORD = re.compile(r"[a-z]{2,}")
 _LOGIN_HEADINGS = {"log in", "login", "log in to the site", "sign in"}
@@ -400,6 +414,8 @@ def parse_courses(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             key = _course_key(href)
         else:
             key = f"{origin}/course/view.php?id={course_id}"
+        if is_ignored_course(key):
+            return
         cleaned = " ".join(str(name).split())
         placeholder_label = is_placeholder_course_name(cleaned, course_id)
         if placeholder_label:

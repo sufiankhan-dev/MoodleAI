@@ -106,6 +106,11 @@ own session (same cookies, same network auth) and stores what Moodle reports:
 - **Alert badge** — computed on the server: red **overdue** once the due instant
   has passed, red **urgent** within 24 h, amber **soon** within 48 h. Roles are
   sorted so overdue and urgent work floats to the top.
+- **Ignored courses** — courses listed in `IGNORED_COURSES`
+  (`browser/moodle.py`, as host + Moodle course id) are skipped everywhere: not
+  listed, synced, or fetched, and any rows already stored for them (the course
+  and its assignments) are removed on the next course read. Currently:
+  Programming Fundamentals Lab (BS-SE-1B), `lms.dsu.edu.pk` id 6870.
 
 - **Course folders and files.** For each course it creates
   `workspace/<course>/`, named exactly like the Courses list. For each assignment

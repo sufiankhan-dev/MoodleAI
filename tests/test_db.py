@@ -207,3 +207,15 @@ def test_older_database_gains_the_sync_columns(tmp_path: Path) -> None:
         assert migrated["due_at"] == "2026-11-01T18:59:00+00:00"
     finally:
         database.close()
+
+
+def test_prune_courses_removes_the_course_and_its_assignments(db: Database) -> None:
+    keep = db.upsert_course("Database Systems", "https://lms.test/course/view.php?id=2", "2")
+    drop = db.upsert_course("Extra Lab", "https://lms.test/course/view.php?id=3", "3")
+    db.upsert_assignment(keep, "Lab 1", "https://lms.test/mod/assign/view.php?id=10", None, None)
+    db.upsert_assignment(drop, "Lab 2", "https://lms.test/mod/assign/view.php?id=11", None, None)
+
+    assert db.prune_courses([drop]) == 1
+    assert db.prune_courses([]) == 0
+    assert [c["name"] for c in db.list_courses()] == ["Database Systems"]
+    assert [a["name"] for a in db.list_assignments()] == ["Lab 1"]

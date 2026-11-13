@@ -251,6 +251,19 @@ class Database:
             self._conn.commit()
             return cursor.rowcount
 
+    def prune_courses(self, course_ids: Iterable[int]) -> int:
+        """Delete courses and their assignments (courses the owner chose to ignore)."""
+
+        ids = [int(course_id) for course_id in course_ids]
+        if not ids:
+            return 0
+        marks = ",".join("?" for _ in ids)
+        with self._lock:
+            self._conn.execute(f"DELETE FROM assignments WHERE course_id IN ({marks})", ids)
+            cursor = self._conn.execute(f"DELETE FROM courses WHERE id IN ({marks})", ids)
+            self._conn.commit()
+            return cursor.rowcount
+
     def get_course(self, course_id: int) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(

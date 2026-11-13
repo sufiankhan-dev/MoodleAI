@@ -200,3 +200,25 @@ def test_course_without_a_label_is_reported_as_a_placeholder() -> None:
     courses = parse_courses(snapshot)
     assert courses[0]["name"] == "Course 10581"
     assert courses[0]["placeholder_name"] is True
+
+
+def test_ignored_course_is_dropped_from_links_and_cards() -> None:
+    snapshot = _snapshot(
+        url="https://lms.dsu.edu.pk/my/",
+        links=[
+            ("Programming Fundamentals Lab(BS-SE-1B)",
+             "https://lms.dsu.edu.pk/course/view.php?id=6870", "link"),
+            ("Database Systems", "https://lms.dsu.edu.pk/course/view.php?id=6871", "link"),
+        ],
+        cards=[{"course_id": "6870", "name": "Programming Fundamentals Lab", "href": ""}],
+    )
+
+    assert [c["course_id"] for c in parse_courses(snapshot)] == ["6871"]
+
+
+def test_same_course_id_on_another_moodle_is_not_ignored() -> None:
+    snapshot = _snapshot(
+        links=[("Algebra", "https://lms.example.edu/course/view.php?id=6870", "link")]
+    )
+
+    assert [c["course_id"] for c in parse_courses(snapshot)] == ["6870"]
