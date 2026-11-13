@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 from pydantic import ValidationError
 
 from agent.llm import LLMError, LLMResult, OllamaService, ToolCallRequest
-from agent.prompts import build_system_prompt
+from agent.prompts import build_draft_prompt, build_system_prompt
 from app.config import Settings
 from app.security import truncate_text
 from browser.session import BrowserSession
@@ -23,6 +23,21 @@ from database.db import Database
 from tools.base import ToolCancelled, ToolContext, ToolError, ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+_FILE_TOOLS = frozenset({"create_word_document", "create_pdf", "create_code_file"})
+_DRAFT_NUDGES = 3
+_DRAFT_NUDGE = (
+    "You have not created any deliverable files yet. Continue now by calling the tools: "
+    "read the listed files if you have not, then create each deliverable with "
+    "create_code_file, create_word_document, or create_pdf. Do not describe what you "
+    "will do; call the tool."
+)
+_DRAFT_CONTINUE = (
+    "Your last reply was empty. You have created {count} file(s) so far. If any task or "
+    "deliverable from the brief is still missing, create it now with a tool call. When "
+    "every deliverable exists, reply with the review checklist (Deliverables, "
+    "Requirements, Check before submitting)."
+)
 
 EmitFn = Callable[[str, str, dict[str, Any] | None], None]
 ApproveFn = Callable[[str, dict[str, Any]], Awaitable[bool]]
@@ -44,6 +59,11 @@ class AgentRun:
 
     conversation_id: int
     user_message: str
+    # "chat" for a normal turn; "draft" adds the draft-mode rules to the prompt.
+    mode: str = "chat"
+    # Tool context state to start from, e.g. the assignment a draft run is for.
+    seed_state: dict[str, Any] = field(default_factory=dict)
+    draft_assignment_id: int | None = None
     stop_requested: bool = False
     outcome: AgentOutcome = field(default_factory=AgentOutcome)
 
@@ -83,6 +103,7 @@ class MoodleAgent:
             approve=approve,
             should_stop=lambda: run.stop_requested,
         )
+        ctx.state.update(run.seed_state)
 
         history = list(
             self.db.get_recent_messages_for_prompt(run.conversation_id, limit=12)
@@ -94,15 +115,13 @@ class MoodleAgent:
         ):
             history.append({"role": "user", "content": run.user_message})
 
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": build_system_prompt(
-                    tool_names=self.registry.names(),
-                    workspace_root=str(self.settings.workspace_dir),
-                ),
-            }
-        ]
+        system_prompt = build_system_prompt(
+            tool_names=self.registry.names(),
+            workspace_root=str(self.settings.workspace_dir),
+        )
+        if run.mode == "draft":
+            system_prompt += build_draft_prompt()
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         for message in history[-10:]:
             content = str(message.get("content") or "").strip()
             if not content:
@@ -113,6 +132,8 @@ class MoodleAgent:
 
         emit("status", "Thinking with qwen3:8b", {"model": self.settings.ollama_model})
         outcome = AgentOutcome(model=self.settings.ollama_model)
+        files_created = 0
+        nudges = 0
 
         for step in range(1, self.settings.max_agent_iterations + 1):
             if run.stop_requested:
@@ -145,14 +166,37 @@ class MoodleAgent:
             if result.content:
                 emit("assistant_message", result.content, None)
 
+            if (
+                not result.tool_calls
+                and run.mode == "draft"
+                and (files_created == 0 or not result.content.strip())
+                and nudges < _DRAFT_NUDGES
+                and step < self.settings.max_agent_iterations
+            ):
+                # Small models often announce "I will retry" and then stop, or
+                # return nothing halfway through. A draft is only useful once its
+                # deliverables exist, so ask it to carry on instead of ending.
+                nudges += 1
+                if result.content:
+                    messages.append({"role": "assistant", "content": result.content})
+                if files_created == 0:
+                    nudge = _DRAFT_NUDGE
+                    reason = "No draft files yet; asking the model to continue"
+                else:
+                    nudge = _DRAFT_CONTINUE.format(count=files_created)
+                    reason = "Empty model reply mid-draft; asking it to continue"
+                messages.append({"role": "user", "content": nudge})
+                ctx.log("agent", reason, None)
+                continue
+
             if not result.tool_calls:
                 outcome.content = result.content.strip()
                 if not outcome.content:
+                    # Reported once, by _finish.
                     outcome.error = (
                         "The model returned an empty response. Try rephrasing, or check that "
                         "qwen3:8b is running."
                     )
-                    emit("error", outcome.error, None)
                 return await self._finish(run, outcome, emit, outcome.content)
 
             assistant_message: dict[str, Any] = {
@@ -176,6 +220,8 @@ class MoodleAgent:
                     return await self._finish(run, outcome, emit, "Stopped by user")
                 outcome.tool_calls += 1
                 tool_payload = await self._execute_tool(ctx, call, emit, run)
+                if call.name in _FILE_TOOLS and '"ok": true' in tool_payload:
+                    files_created += 1
                 messages.append(
                     {
                         "role": "tool",

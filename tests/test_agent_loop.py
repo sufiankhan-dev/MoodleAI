@@ -216,3 +216,80 @@ def test_cancelled_result_is_not_saved_as_answer(base) -> None:
     )
     assert outcome.cancelled is True
     assert outcome.content == ""
+
+
+def test_draft_mode_nudges_a_model_that_stops_before_creating_files(base) -> None:
+    settings, db, conversation_id, registry, _executed = base
+    fake = FakeLLM(
+        [
+            LLMResult(content="I will retry reading the files."),
+            LLMResult(content="Here is my plan."),
+            LLMResult(content="Thinking."),
+            LLMResult(content="Still nothing."),
+        ]
+    )
+    agent = MoodleAgent(settings=settings, db=db, browser=None, registry=registry, llm=fake)
+    events: list = []
+    outcome = _run(
+        agent,
+        AgentRun(conversation_id=conversation_id, user_message="Draft it", mode="draft"),
+        events,
+    )
+
+    # Three nudges, then the fourth empty-handed answer ends the run.
+    assert len(fake.calls) == 4
+    assert outcome.content == "Still nothing."
+    nudge = fake.calls[1]["messages"][-1]
+    assert nudge["role"] == "user"
+    assert "not created any deliverable" in nudge["content"]
+    assert fake.calls[1]["messages"][-2] == {
+        "role": "assistant",
+        "content": "I will retry reading the files.",
+    }
+
+
+def test_chat_mode_is_never_nudged(base) -> None:
+    settings, db, conversation_id, registry, _executed = base
+    fake = FakeLLM([LLMResult(content="Just an answer.")])
+    agent = MoodleAgent(settings=settings, db=db, browser=None, registry=registry, llm=fake)
+    outcome = _run(
+        agent,
+        AgentRun(conversation_id=conversation_id, user_message="Please use the echo tool."),
+        [],
+    )
+    assert len(fake.calls) == 1
+    assert outcome.content == "Just an answer."
+
+
+def test_draft_mode_continues_after_an_empty_reply_mid_draft(base) -> None:
+    settings, db, conversation_id, registry, _executed = base
+
+    class FileArgs(StrictArgs):
+        filename: str = ""
+
+    async def create_code_file(_ctx: ToolContext, args: FileArgs) -> dict:
+        return {"ok": True, "message": f"Created {args.filename}"}
+
+    registry.register(
+        ToolSpec(name="create_code_file", description="Write", args_model=FileArgs, handler=create_code_file)
+    )
+    fake = FakeLLM(
+        [
+            LLMResult(tool_calls=[ToolCallRequest(name="create_code_file", arguments={"filename": "a.py"})]),
+            LLMResult(content=""),
+            LLMResult(tool_calls=[ToolCallRequest(name="create_code_file", arguments={"filename": "b.py"})]),
+            LLMResult(content="## Deliverables\n- a.py\n- b.py"),
+        ]
+    )
+    agent = MoodleAgent(settings=settings, db=db, browser=None, registry=registry, llm=fake)
+    events: list = []
+    outcome = _run(
+        agent,
+        AgentRun(conversation_id=conversation_id, user_message="Draft it", mode="draft"),
+        events,
+    )
+
+    assert outcome.error is None
+    assert outcome.content.startswith("## Deliverables")
+    assert "created 1 file(s) so far" in fake.calls[2]["messages"][-1]["content"]
+    assert [kind for kind, _m, _d in events].count("error") == 0

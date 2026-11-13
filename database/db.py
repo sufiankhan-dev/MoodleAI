@@ -342,6 +342,15 @@ class Database:
             )
             self._conn.commit()
 
+    def get_assignment(self, assignment_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT a.*, c.name AS course_name, c.url AS course_url FROM assignments a "
+                "LEFT JOIN courses c ON c.id=a.course_id WHERE a.id=?",
+                (assignment_id,),
+            ).fetchone()
+        return _as_dict(row)
+
     def list_assignments(self, course_id: int | None = None) -> list[dict[str, Any]]:
         with self._lock:
             if course_id is None:

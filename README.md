@@ -115,10 +115,21 @@ own session (same cookies, same network auth) and stores what Moodle reports:
   assignment description into `attachments/`. Your own submitted files (the
   submission table) are never fetched. The download size limit
   (`MAX_DOWNLOAD_MB`) applies.
+- **Attachment text.** Each teacher file (`.pptx`, `.docx`, `.pdf`, or a text/code
+  file) is read into `extracted/<filename>.txt`, and the same text is added to
+  `instructions/assignment.md` under *Attachment content*, above the raw page
+  text. That way the instructions show what the slides or brief actually ask, not
+  just the file name. PowerPoint is read straight from the `.pptx` zip with the
+  standard library (slides in order, plus speaker notes). Each file is added once,
+  marked so it is never duplicated, and folders saved by an older version get
+  their attachment text on the next sync. Legacy `.ppt`/`.doc` and scanned PDFs
+  with no text layer are listed in the sync notes instead.
+  `extracted/page.txt` stays the Moodle page text only.
 
 Pages are read with in-page `fetch` through Chrome's own session, so the visible
 tab is never navigated. Files are only ever **created**: an existing file is never
-rewritten, so a repeat sync downloads nothing it already has. Assignments that are
+rewritten, so a repeat sync downloads nothing it already has. The one exception is
+`assignment.md`, which gets an attachment's text added once, in its marked section. Assignments that are
 still pending are re-checked on each sync for files a teacher added later.
 
 Press **Sync** in the Moodle connection panel to re-read everything at any time;
@@ -129,6 +140,36 @@ for it to finish, because both would disturb the same Chrome tab. Each sync
 overwrites the stored status, so a resubmitted assignment stops looking pending.
 There is no background timer: sync runs on login and when you ask.
 
+### Assignment drafts
+
+Every assignment row has a **Draft** button. It opens a dialog with the draft's
+files and their review state:
+
+1. **Draft with AI** starts an ordinary agent run in *draft mode*, shown in the
+   chat as `Draft: <assignment>`. The assignment is pre-opened, so the model reads
+   the saved `instructions/` and `attachments/` (or opens the Moodle page if
+   nothing was synced) and writes each deliverable into that assignment's folder:
+   - written work → `documents/*.docx`, or `pdfs/*.pdf` if the brief asks for PDF
+   - programming work → `code/*` (never run)
+   - online-text assignments → `code/online_text.md`, the exact text to paste
+   - quizzes, forums, or anything that isn't a file → `code/notes.md` saying what to do
+2. When the run ends, the model's final checklist (deliverables, each requirement
+   mapped to a file or MISSING, assumptions) is saved as `explanations/REVIEW.md`.
+3. **Mark reviewed** records the SHA-256 of every draft file in
+   `<assignment>/review.json`. Editing, adding, or deleting a draft file afterwards
+   shows the draft as **Changed since review** until you review it again.
+
+Draft files are everything under `code/`, `documents/`, `pdfs/` and
+`submission/`; teacher files and the app's notes are never counted. Overwrites
+still go through the approval dialog. **Nothing is submitted:** upload the
+reviewed files to Moodle yourself. The drafts come from a local 8B model, so treat
+them as a starting point, check your course's policy on AI-assisted work, and
+expect to fix things.
+
+Routes: `GET /api/assignments/{id}/draft` (files + status),
+`POST /api/assignments/{id}/draft` (start), `POST /api/assignments/{id}/review`
+(record hashes). The two POSTs need `X-MoodleAI: 1` like every mutation.
+
 ---
 
 ## What it can do
@@ -138,9 +179,10 @@ There is no background timer: sync runs on login and when you ask.
 | Moodle reading | Courses, course pages, assignments, due text, submission status, visible page text and links |
 | Automatic sync | On login (and on demand) reads every course and assignment, stores submission status, due date, and a due-soon/overdue badge, and saves instructions plus teacher attachments into one folder per course — no model involved |
 | Attachments | Download files linked on assignment pages into the assignment workspace |
-| Documents | Read PDFs (PyMuPDF), DOCX/TXT/MD/CSV/JSON/YAML/code |
+| Documents | Read PDFs (PyMuPDF), DOCX, PPTX (slides + notes), TXT/MD/CSV/JSON/YAML/code |
 | Study help | Explain assignments, break requirements into tasks, work through problems step by step |
 | File generation | Word `.docx`, PDF (Chrome print engine), and safe code/text files |
+| Assignment drafts | One click drafts every deliverable (Word/PDF/code/online text) into the assignment folder, writes a requirement checklist, and tracks your review with file hashes. You submit yourself |
 | Workspace | One folder per synced course, one per assignment, with `instructions/`, `attachments/`, `extracted/`, `explanations/`, `code/`, `documents/`, `pdfs/`, `submission/`. Course names given by the model or a breadcrumb (“database systems”, “CS301”) resolve to the synced course, so a course never gets a second folder |
 | UI | Single-page dashboard served by FastAPI: chat with streaming, tool traces, and suggestions built from your data; collapsible cards; browser status; approvals; course-folder tree with downloads; activity log; light/dark theme |
 
@@ -205,9 +247,9 @@ Only these 14 implemented tools are exposed to the model:
 | `open_course` | Open a course and read its activity list | No |
 | `list_assignments` | Pending assignments with raw due/status text | No |
 | `open_assignment` | Read details and save the local workspace | No |
-| `download_attachment` | Fetch a file the user can already see | No |
+| `download_attachment` | Fetch a file the user can already see and save its text in `extracted/` | No |
 | `read_pdf` | Extract PDF text with page limits | No |
-| `read_document` | Read DOCX/text/code from the workspace | No |
+| `read_document` | Read DOCX/PPTX/text/code from the workspace | No |
 | `create_word_document` | Create `.docx` in `documents/` | No |
 | `create_pdf` | Render a PDF with headless Chrome | No |
 | `create_code_file` | Write an allowed code/text file; never runs it | No |
@@ -259,6 +301,7 @@ MoodleAI/
 ├── app/
 │   ├── api.py              # FastAPI routes, SSE, CSRF/host guards
 │   ├── state.py            # app state, approvals, run lifecycle
+│   ├── drafts.py           # assignment draft files, review hashes, REVIEW.md
 │   ├── config.py           # validated settings
 │   ├── security.py         # URL policy, path jail, sanitization
 │   ├── events.py           # in-process pub/sub
@@ -287,12 +330,14 @@ workspace/Database Systems/Normalization Exercise/
 ├── instructions/assignment.md
 ├── instructions/metadata.json
 ├── attachments/instructions.pdf
-├── extracted/instructions.txt
-├── explanations/
+├── extracted/page.txt
+├── extracted/instructions.pdf.txt # attachment text (also in assignment.md)
+├── explanations/REVIEW.md      # draft checklist (after "Draft with AI")
 ├── code/normalize.py
 ├── documents/solution.docx
 ├── pdfs/summary.pdf
-└── submission/
+├── submission/
+└── review.json                 # hashes recorded by "Mark reviewed"
 ```
 
 A file created while a course is open but no assignment is goes to
@@ -354,9 +399,11 @@ $env:RUN_OLLAMA_TESTS="1"
 python -m pytest tests/test_ollama.py -q
 ```
 
-The fast suite covers 117 tests plus 10 skipped tests that need a real browser or
-the local model. With `RUN_BROWSER_TESTS=1` the browser tests run for real and
-only the Ollama tests remain skipped (124 passed, 3 skipped). The optional browser
+The fast suite covers 124 tests plus 10 skipped tests that need a real browser or
+the local model. `tests/test_drafts.py` covers draft review hashing and a scripted
+draft run end to end; `tests/test_extract.py` covers PPTX/DOCX/PDF text extraction
+and the attachment section in `assignment.md`. With `RUN_BROWSER_TESTS=1` the
+browser tests also run, leaving only the Ollama tests skipped. The optional browser
 suite includes:
 
 - visible Chrome launch, login detection, and host-policy enforcement

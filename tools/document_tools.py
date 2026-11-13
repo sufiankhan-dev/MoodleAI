@@ -15,10 +15,11 @@ import fitz
 from docx import Document
 from docx.shared import Pt
 from playwright.async_api import async_playwright
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.security import sanitize_filename
-from tools.base import StrictArgs, ToolContext, ToolError, ToolRegistry, ToolSpec
+from tools.base import StrictArgs, ToolContext, ToolError, ToolRegistry, ToolSpec, clamp_int
+from tools.extract import ExtractionError, extract_text
 from tools.file_utils import resolve_input_path, write_text_atomic
 from tools.workspace import assignment_workspace, canonical_course_name, course_folder
 
@@ -76,8 +77,10 @@ _LANGUAGE_EXTENSIONS = {
 
 class ReadDocumentArgs(StrictArgs):
     path: str = Field(description="DOCX/TXT/MD/CSV/JSON/code file inside the workspace.")
-    max_chars: int = Field(default=20000, ge=1000, le=60000, description="Maximum characters.")
+    max_chars: int = Field(default=20000, ge=1000, le=60000, description="Maximum characters (1000-60000).")
     save_text: bool = Field(default=True, description="Save extracted text to extracted/.")
+
+    _clamp_chars = field_validator("max_chars", mode="before")(clamp_int(1000, 60000))
 
 
 class CreateWordArgs(StrictArgs):
@@ -332,12 +335,20 @@ async def read_document(ctx: ToolContext, args: ReadDocumentArgs) -> dict[str, A
         raise ToolError(
             "Legacy .doc files are not supported. Ask the user to save it as .docx or PDF."
         )
-    if suffix == ".pptx":
-        raise ToolError("PowerPoint files are not supported. Ask the user for a PDF export.")
+    if suffix == ".ppt":
+        raise ToolError(
+            "Legacy .ppt files are not supported. Ask the user to save it as .pptx or PDF."
+        )
 
     paragraphs: list[str] = []
     tables = 0
-    if suffix == ".docx":
+    if suffix == ".pptx":
+        try:
+            text = extract_text(path, max_chars=args.max_chars)
+        except ExtractionError as exc:
+            raise ToolError(f"Could not read the presentation: {exc}.") from exc
+        paragraphs = [line for line in text.splitlines() if line.strip()]
+    elif suffix == ".docx":
         try:
             document = Document(str(path))
         except Exception as exc:
@@ -358,7 +369,7 @@ async def read_document(ctx: ToolContext, args: ReadDocumentArgs) -> dict[str, A
     else:
         raise ToolError(
             f"Unsupported document type: {suffix or 'no extension'}. "
-            "Supported: .docx, .txt, .md, .csv, .json, .xml, .yaml, and code files."
+            "Supported: .docx, .pptx, .txt, .md, .csv, .json, .xml, .yaml, and code files."
         )
 
     text = "\n".join(paragraphs)
@@ -367,7 +378,15 @@ async def read_document(ctx: ToolContext, args: ReadDocumentArgs) -> dict[str, A
 
     saved_text: str | None = None
     assignment = ctx.current_assignment()
-    if args.save_text and assignment and assignment.get("workspace") and text:
+    # Only binary formats need a text copy; a .md/.txt/code file is already text,
+    # and copying it into extracted/ just duplicates it.
+    if (
+        args.save_text
+        and suffix in {".docx", ".pptx"}
+        and assignment
+        and assignment.get("workspace")
+        and text
+    ):
         base, _relative = assignment_workspace(
             ctx.jail,
             assignment.get("course_name", ""),

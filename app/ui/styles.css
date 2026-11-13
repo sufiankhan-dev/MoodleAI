@@ -938,6 +938,24 @@ input[type="password"]:focus {
   white-space: normal;
 }
 
+/* Assignment row = the list item plus a sibling "Draft" action on the right. */
+.assignment-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.assignment-row > .list-item {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.assignment-row > .row-action {
+  flex: 0 0 auto;
+  margin-top: 5px;
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
@@ -1829,6 +1847,83 @@ input[type="password"]:focus {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* ---------- draft dialog ---------- */
+
+.draft-card {
+  width: min(540px, 100%);
+}
+
+.draft-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.draft-head h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#draftMeta:empty {
+  display: none;
+}
+
+.draft-hint {
+  color: var(--foreground) !important;
+}
+
+.draft-files {
+  max-height: 260px;
+  margin: 12px 0 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 4px);
+  list-style: none;
+}
+
+.draft-file {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: calc(var(--radius) - 6px);
+  font-size: 12px;
+}
+
+.draft-file:hover {
+  background: var(--accent);
+}
+
+.draft-file a {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: 500;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-file a:hover {
+  text-decoration: underline;
+}
+
+.draft-file-meta {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+}
+
+.draft-note {
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
 }
 
 .modal-note {

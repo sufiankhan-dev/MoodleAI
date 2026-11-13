@@ -11,8 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from agent.llm import OllamaService
-from agent.loop import AgentRun, MoodleAgent
+from agent.loop import AgentOutcome, AgentRun, MoodleAgent
 from app.config import Settings, load_settings
+from app.drafts import (
+    build_draft_request,
+    draft_summary,
+    input_files,
+    record_review,
+    resolve_assignment_dir,
+    write_review_note,
+)
 from app.events import EventBus
 from app.logging_setup import configure_logging
 from app.security import PathJail, redact_url, validate_http_url
@@ -20,6 +28,7 @@ from app.sync import URGENCY_RANK, assignment_view, sync_courses
 from browser.session import BrowserError, BrowserSession
 from database.db import Database
 from tools import build_registry
+from tools.workspace import assignment_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +151,7 @@ class AppState:
 
     # ---------- chat ----------
 
-    async def start_chat(self, message: str, conversation_id: int | None = None) -> tuple[int, str]:
+    def _ensure_can_run(self) -> None:
         if self.active_run is not None and self._task is not None and not self._task.done():
             raise BusyError("The agent is already working. Stop it or wait for it to finish.")
         if self._sync_task is not None and not self._sync_task.done():
@@ -151,6 +160,9 @@ class AppState:
             raise BusyError(
                 "Still fetching your Moodle data. Send your message when the sync finishes."
             )
+
+    async def start_chat(self, message: str, conversation_id: int | None = None) -> tuple[int, str]:
+        self._ensure_can_run()
         cleaned = message.strip()
         if not cleaned:
             raise ValueError("Message is empty")
@@ -173,11 +185,13 @@ class AppState:
 
     async def _run_agent(self, run: AgentRun) -> None:
         try:
-            await self.agent.run(
+            outcome = await self.agent.run(
                 run=run,
                 emit=self.emit,
                 approve=self.request_approval,
             )
+            if run.mode == "draft":
+                self._finish_draft(run, outcome)
         except asyncio.CancelledError:
             self.emit("stopped", "Agent stopped", {"steps": run.outcome.steps})
             raise
@@ -189,6 +203,152 @@ class AppState:
             self.active_run_id = None
             self._task = None
             self._set_status("idle")
+
+    # ---------- assignment drafts ----------
+
+    def _assignment_or_error(self, assignment_id: int) -> dict[str, Any]:
+        row = self.db.get_assignment(assignment_id)
+        if row is None:
+            raise LookupError("Assignment not found. Sync your courses and try again.")
+        return row
+
+    def assignment_draft(self, assignment_id: int) -> dict[str, Any]:
+        row = self._assignment_or_error(assignment_id)
+        base = resolve_assignment_dir(self.jail, row.get("workspace_path"))
+        return {
+            "assignment": {
+                "id": row["id"],
+                "name": row.get("name") or "",
+                "course_name": row.get("course_name") or "",
+                "due_text": row.get("due_text") or "",
+            },
+            **draft_summary(self.jail, base),
+        }
+
+    async def start_draft(self, assignment_id: int) -> dict[str, Any]:
+        """Start an agent run that drafts every deliverable for one assignment."""
+
+        self._ensure_can_run()
+        row = self._assignment_or_error(assignment_id)
+        course_name = row.get("course_name") or "Uncategorised course"
+        base = resolve_assignment_dir(self.jail, row.get("workspace_path"))
+        if base is None:
+            base, _relative = assignment_workspace(
+                self.jail,
+                course_name,
+                row.get("name") or "Assignment",
+                [str(course["name"]) for course in self.db.list_courses()],
+            )
+        relative = self.jail.relative("workspace", base)
+        self.db.set_assignment_workspace(assignment_id, relative)
+
+        message = build_draft_request(row, input_files(self.jail, base), relative)
+        cid = self.db.create_conversation(f"Draft: {row.get('name') or 'Assignment'}"[:120])
+        self.db.add_message(cid, "user", message)
+        seed: dict[str, Any] = {
+            # Pre-opening the assignment makes the file tools write into its folder
+            # without the model having to navigate Moodle first.
+            "current_assignment": {
+                "name": row.get("name") or "Assignment",
+                "course_name": course_name,
+                "url": row.get("url") or "",
+                "due_text": row.get("due_text") or "",
+                "submission_status_text": row.get("status_text") or "",
+                "workspace": relative,
+                "db_id": assignment_id,
+            }
+        }
+        if row.get("course_url"):
+            seed["current_course"] = {
+                "name": course_name,
+                "url": row["course_url"],
+                "db_id": row.get("course_id"),
+            }
+        run = AgentRun(
+            conversation_id=cid,
+            user_message=message,
+            mode="draft",
+            seed_state=seed,
+            draft_assignment_id=assignment_id,
+        )
+        self.active_run = run
+        self.active_run_id = uuid.uuid4().hex[:12]
+        self._set_status("running")
+        self.emit(
+            "user_message",
+            message,
+            {"conversation_id": cid, "draft_assignment_id": assignment_id},
+        )
+        self.emit(
+            "draft",
+            f"Drafting {row.get('name') or 'assignment'}",
+            {"assignment_id": assignment_id, "state": "running"},
+        )
+        self._task = asyncio.create_task(self._run_agent(run))
+        return {"conversation_id": cid, "run_id": self.active_run_id, "workspace": relative}
+
+    def _finish_draft(self, run: AgentRun, outcome: AgentOutcome) -> None:
+        assignment_id = run.draft_assignment_id
+        if assignment_id is None:
+            return
+        row = self.db.get_assignment(assignment_id)
+        base = resolve_assignment_dir(self.jail, (row or {}).get("workspace_path"))
+        if row is None or base is None:
+            return
+        summary = draft_summary(self.jail, base)
+        if outcome.content and not outcome.cancelled and not outcome.error:
+            note = outcome.content
+        elif summary["files"]:
+            # The run stopped early (empty reply, error, Stop, or step limit), but
+            # some files exist. Say so plainly so nobody mistakes it for complete.
+            reason = (
+                "it was stopped" if outcome.cancelled else (outcome.error or "it ended early")
+            )
+            listed = "\n".join(f"- {item['path']}" for item in summary["files"])
+            note = (
+                "## Draft incomplete\n\n"
+                f"The model did not finish this draft ({reason}). It wrote no checklist, "
+                "so some tasks may be missing.\n\n"
+                f"## Files created\n\n{listed}\n\n"
+                "## Check before submitting\n\n"
+                "- Compare every task in `instructions/assignment.md` with the files above.\n"
+                "- Use **Redraft**, or ask in the chat for the missing tasks.\n"
+            )
+        else:
+            note = ""
+        if note:
+            try:
+                write_review_note(base, row.get("name") or "Assignment", note)
+            except OSError:
+                logger.exception("Could not write the draft review note")
+            summary = draft_summary(self.jail, base)
+        self.emit(
+            "draft",
+            f"Draft ready: {len(summary['files'])} file(s) to review"
+            if summary["files"]
+            else "Draft finished without creating files",
+            {
+                "assignment_id": assignment_id,
+                "state": "done",
+                "status": summary["status"],
+                "files": len(summary["files"]),
+            },
+        )
+
+    def mark_draft_reviewed(self, assignment_id: int) -> dict[str, Any]:
+        if self.active_run is not None and self._task is not None and not self._task.done():
+            raise BusyError("The agent is still working. Mark the draft reviewed when it finishes.")
+        row = self._assignment_or_error(assignment_id)
+        base = resolve_assignment_dir(self.jail, row.get("workspace_path"))
+        if base is None:
+            raise ValueError("This assignment has no draft yet. Draft it first.")
+        summary = record_review(self.jail, base)
+        self.emit(
+            "draft",
+            f"Marked reviewed: {row.get('name') or 'assignment'}",
+            {"assignment_id": assignment_id, "state": "reviewed", "files": len(summary["files"])},
+        )
+        return self.assignment_draft(assignment_id)
 
     async def stop_agent(self) -> bool:
         if self.active_run is None:
@@ -437,6 +597,9 @@ class AppState:
         attachments = summary.get("attachments", 0)
         if summary.get("ok") and (saved or attachments):
             message += f" · saved {saved} new assignment folder(s), {attachments} file(s)"
+        extracted = summary.get("extracted", 0)
+        if summary.get("ok") and extracted:
+            message += f" · read the text of {extracted} attachment(s)"
         if summary.get("ok") and errors:
             message += f" · {len(errors)} course(s) could not be read"
         if summary.get("ok") and summary.get("deadlines_limited"):

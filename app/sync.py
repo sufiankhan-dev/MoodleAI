@@ -45,6 +45,7 @@ from browser.session import BrowserError, BrowserSession
 from database.db import Database
 from tools.attachment_tools import _filename_from_url, filename_from_disposition
 from tools.base import ToolContext, ToolError
+from tools.extract import index_attachments
 from tools.file_utils import write_bytes_atomic
 from tools.workspace import assignment_workspace, course_folder, save_assignment_bundle
 
@@ -170,6 +171,7 @@ def _empty_summary(started_at: datetime) -> dict[str, Any]:
         "folders": 0,
         "saved": 0,
         "attachments": 0,
+        "extracted": 0,
         "deadlines_limited": False,
         "errors": [],
         "notes": [],
@@ -267,6 +269,8 @@ async def _save_assignment_files(
     already_saved = (base / _BUNDLE_MARKER).exists()
     if already_saved and not row.get("pending"):
         db.set_assignment_workspace(assignment_id, relative)
+        # Local only: older folders get their attachment text on the next sync.
+        _index_attachments(jail, db, base, row["name"], assignment_id, summary)
         return
 
     detail = await asyncio.wait_for(
@@ -325,6 +329,34 @@ async def _save_assignment_files(
             continue
         if saved:
             summary["attachments"] += 1
+
+    _index_attachments(jail, db, base, row["name"], assignment_id, summary)
+
+
+def _index_attachments(
+    jail: PathJail,
+    db: Database,
+    base: Path,
+    assignment_name: str,
+    assignment_id: int,
+    summary: dict[str, Any],
+) -> None:
+    """Extract teacher files to text and fold them into assignment.md."""
+
+    try:
+        result = index_attachments(base)
+    except Exception as exc:
+        logger.exception("Attachment text extraction failed")
+        summary["notes"].append(f"{assignment_name}: attachment text not extracted ({exc}).")
+        return
+    for created in result["created"]:
+        absolute = base / created
+        db.record_file(
+            jail.relative("workspace", absolute), absolute.stat().st_size, "extracted", assignment_id
+        )
+    summary["extracted"] = summary.get("extracted", 0) + len(result["created"])
+    for problem in result["problems"]:
+        summary["notes"].append(f"{assignment_name}: {problem}.")
 
 
 async def sync_courses(

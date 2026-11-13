@@ -6,6 +6,7 @@ already see. Local writes never overwrite an existing file without approval.
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import re
 from pathlib import Path
@@ -18,8 +19,11 @@ from app.security import sanitize_filename, validate_http_url, UrlSecurityError
 from browser.moodle import take_snapshot
 from browser.session import BrowserError
 from tools.base import StrictArgs, ToolContext, ToolError, ToolRegistry, ToolSpec
+from tools.extract import index_attachments
 from tools.file_utils import write_bytes_atomic
 from tools.workspace import assignment_workspace
+
+logger = logging.getLogger(__name__)
 
 _CONTENT_DISPOSITION_STAR = re.compile(r"filename\*\s*=\s*UTF-8''([^;]+)", re.IGNORECASE)
 _CONTENT_DISPOSITION_PLAIN = re.compile(r'filename\s*=\s*"?([^";]+)"?', re.IGNORECASE)
@@ -206,13 +210,28 @@ async def download_attachment(ctx: ToolContext, args: DownloadArgs) -> dict[str,
     ctx.db.record_file(relative_path, len(body), "attachment", db_id)
     ctx.log("file", f"Saved attachment: {relative_path}", {"bytes": len(body)})
 
+    # Make the file readable as text right away (extracted/<name>.txt, plus a
+    # section in instructions/assignment.md), so the model can read it next.
+    text_path = None
+    try:
+        index_attachments(base)
+        expected = f"extracted/{filename}.txt"
+        if (base / expected).is_file():
+            text_path = f"{relative}/{expected}"
+    except Exception:
+        logger.debug("Attachment text extraction failed", exc_info=True)
+
+    message = f"Downloaded {filename} ({len(body)} bytes) to the assignment workspace."
+    if text_path:
+        message += f" Its text is in {text_path}; read it with read_document."
     return {
         "ok": True,
         "path": relative_path,
         "filename": filename,
         "bytes": len(body),
         "content_type": content_type or "unknown",
-        "message": f"Downloaded {filename} ({len(body)} bytes) to the assignment workspace.",
+        "text_path": text_path,
+        "message": message,
     }
 
 

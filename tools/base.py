@@ -40,6 +40,24 @@ class StrictArgs(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+def clamp_int(low: int, high: int) -> Callable[[Any], Any]:
+    """A ``mode="before"`` validator that pulls a size limit into range.
+
+    Models often ask for "as much as possible" (e.g. ``max_chars=100000``).
+    Rejecting the whole call over a size hint wastes a slow model round, so
+    numeric limits are clamped instead; non-numbers still fail validation.
+    """
+
+    def _clamp(value: Any) -> Any:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
+            return max(low, min(high, int(float(value))))
+        return value
+
+    return _clamp
+
+
 @dataclass
 class ToolContext:
     """Everything a tool is allowed to use, injected by the agent runner."""

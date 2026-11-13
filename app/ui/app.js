@@ -84,6 +84,15 @@
     approvalDetails: $("approvalDetails"),
     approveBtn: $("approveBtn"),
     denyBtn: $("denyBtn"),
+    draftModal: $("draftModal"),
+    draftHeading: $("draftHeading"),
+    draftStatus: $("draftStatus"),
+    draftMeta: $("draftMeta"),
+    draftHint: $("draftHint"),
+    draftFiles: $("draftFiles"),
+    draftCloseBtn: $("draftCloseBtn"),
+    draftReviewBtn: $("draftReviewBtn"),
+    draftStartBtn: $("draftStartBtn"),
     toast: $("toast"),
     toolCount: $("toolCount"),
   };
@@ -116,6 +125,8 @@
     connected: false,
     sseFailed: false,
     lastBrowser: null,
+    draftId: null,
+    draft: null,
   };
 
   let toastTimer = 0;
@@ -943,7 +954,191 @@
       const inCourse = assignment.course_name ? ` in "${assignment.course_name}"` : "";
       fillComposer(`Open assignment "${assignment.name}"${inCourse}`);
     });
-    return button;
+
+    // A sibling button, not a nested one: buttons cannot contain buttons.
+    const row = document.createElement("div");
+    row.className = "assignment-row";
+    row.appendChild(button);
+    if (assignment.id !== undefined && assignment.id !== null) {
+      const draft = document.createElement("button");
+      draft.type = "button";
+      draft.className = "btn btn-ghost small row-action";
+      draft.textContent = "Draft";
+      draft.title = "Draft this assignment with the local model, then review it";
+      draft.addEventListener("click", () => openDraft(assignment.id));
+      row.appendChild(draft);
+    }
+    return row;
+  }
+
+  // ---------- assignment drafts ----------
+
+  const DRAFT_STATUS = {
+    none: ["No draft yet", "chip"],
+    draft: ["Needs review", "chip chip-warn"],
+    changed: ["Changed since review", "chip chip-warn"],
+    reviewed: ["Reviewed", "chip chip-ok"],
+  };
+
+  function formatBytes(size) {
+    const value = Number(size) || 0;
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function draftFileItem(file, extraClass) {
+    const item = document.createElement("li");
+    item.className = `draft-file${extraClass ? ` ${extraClass}` : ""}`;
+    const link = document.createElement("a");
+    link.href = file.download_url;
+    link.textContent = file.name || file.path;
+    link.title = file.path;
+    link.setAttribute("download", "");
+    item.appendChild(link);
+    const meta = document.createElement("span");
+    meta.className = "draft-file-meta";
+    const bits = [];
+    if (file.folder) bits.push(`${file.folder}/`);
+    if (file.size !== undefined) bits.push(formatBytes(file.size));
+    if (file.changed) bits.push("changed");
+    meta.textContent = bits.join(" · ");
+    item.appendChild(meta);
+    return item;
+  }
+
+  function renderDraft(data) {
+    state.draft = data;
+    const info = data?.assignment || {};
+    setText(els.draftHeading, info.name || "Assignment draft");
+    const metaParts = [];
+    if (info.course_name) metaParts.push(info.course_name);
+    if (info.due_text) metaParts.push(`Due ${info.due_text}`);
+    setText(els.draftMeta, metaParts.join(" · "));
+
+    const [label, className] = DRAFT_STATUS[data?.status] || DRAFT_STATUS.none;
+    if (els.draftStatus) {
+      els.draftStatus.className = className;
+      els.draftStatus.textContent = label;
+    }
+
+    const files = Array.isArray(data?.files) ? data.files : [];
+    let hint = "";
+    if (state.running) {
+      hint = "The agent is working. Files appear here when the run finishes.";
+    } else if (data?.status === "none") {
+      hint = "Draft with AI reads the saved instructions and teacher files, then writes every deliverable into this assignment's folder.";
+    } else if (data?.status === "changed") {
+      hint = "Files changed after your last review. Check them, then mark the draft reviewed again.";
+    } else if (data?.status === "reviewed") {
+      hint = `Reviewed ${data.reviewed_at ? new Date(data.reviewed_at).toLocaleString() : ""}. Upload these files in Moodle yourself.`;
+    } else {
+      hint = "Open each file and check it against REVIEW.md before marking it reviewed.";
+    }
+    setText(els.draftHint, hint);
+
+    if (els.draftFiles) {
+      els.draftFiles.replaceChildren();
+      if (data?.review_note) {
+        els.draftFiles.appendChild(
+          draftFileItem(
+            {
+              name: "REVIEW.md",
+              path: data.review_note,
+              folder: "explanations",
+              download_url: `/api/files/download?root=workspace&path=${encodeURIComponent(data.review_note)}`,
+            },
+            "draft-note"
+          )
+        );
+      }
+      files.forEach((file) => els.draftFiles.appendChild(draftFileItem(file)));
+      els.draftFiles.classList.toggle("hidden", !files.length && !data?.review_note);
+    }
+
+    if (els.draftStartBtn) {
+      els.draftStartBtn.textContent = files.length ? "Redraft" : "Draft with AI";
+      els.draftStartBtn.disabled = state.running;
+    }
+    if (els.draftReviewBtn) {
+      els.draftReviewBtn.disabled = state.running || !files.length || data?.status === "reviewed";
+    }
+  }
+
+  async function loadDraft(assignmentId) {
+    const data = await api(`/api/assignments/${encodeURIComponent(assignmentId)}/draft`);
+    if (state.draftId === assignmentId) renderDraft(data);
+    return data;
+  }
+
+  async function openDraft(assignmentId) {
+    state.draftId = assignmentId;
+    renderDraft({ assignment: (state.assignments || []).find((row) => row.id === assignmentId), status: "none", files: [] });
+    els.draftModal?.classList.remove("hidden");
+    try {
+      await loadDraft(assignmentId);
+    } catch (error) {
+      showToast(error.message, "bad");
+    }
+  }
+
+  function closeDraft() {
+    state.draftId = null;
+    els.draftModal?.classList.add("hidden");
+  }
+
+  async function startDraft() {
+    const assignmentId = state.draftId;
+    if (assignmentId === null || state.running) return;
+    const hasFiles = Boolean(state.draft?.files?.length);
+    if (
+      hasFiles &&
+      !window.confirm("Redraft this assignment? Existing files are only replaced if you approve each overwrite.")
+    ) {
+      return;
+    }
+    const name = state.draft?.assignment?.name || "assignment";
+    await withLoading(els.draftStartBtn, async () => {
+      // The run is an ordinary agent conversation shown in the chat. Clear the
+      // chat before the request so the run's first live event is not wiped.
+      restoreWelcome();
+      state.lastAssistantEl = null;
+      state.lastUserText = "";
+      try {
+        const response = await api(`/api/assignments/${encodeURIComponent(assignmentId)}/draft`, {
+          method: "POST",
+          body: {},
+        });
+        state.conversationId = response.conversation_id;
+        state.conversationStarted = true;
+        setText(els.chatTitle, truncate(`Draft: ${name}`, 70));
+        setText(els.chatSubtitle, "Drafting · qwen3:8b · nothing is submitted");
+        setRunning(true);
+        closeDraft();
+        showToast("Drafting started. Approve any overwrite the agent asks for.");
+      } catch (error) {
+        showToast(error.message, "bad");
+      }
+    });
+  }
+
+  async function markReviewed() {
+    const assignmentId = state.draftId;
+    if (assignmentId === null) return;
+    let data = null;
+    await withLoading(els.draftReviewBtn, async () => {
+      try {
+        data = await api(`/api/assignments/${encodeURIComponent(assignmentId)}/review`, {
+          method: "POST",
+          body: {},
+        });
+        showToast("Marked reviewed. Any later edit will show as changed.", "ok");
+      } catch (error) {
+        showToast(error.message, "bad");
+      }
+    });
+    // Rendered after withLoading re-enables the button, so "reviewed" can disable it.
+    if (data && state.draftId === assignmentId) renderDraft(data);
   }
 
   function renderCourses(courses) {
@@ -1829,7 +2024,20 @@
         break;
       }
 
+      case "draft": {
+        addActivity({ kind: "draft", level: "info", message, created_at: event.ts }, true);
+        if (data?.state === "done") {
+          showToast(message || "Draft finished.", data.files ? "ok" : undefined);
+          scheduleDataRefresh();
+        }
+        if (state.draftId !== null && data?.assignment_id === state.draftId) {
+          loadDraft(state.draftId).catch(() => {});
+        }
+        break;
+      }
+
       case "reset": {
+        closeDraft();
         applyLocalReset();
         refreshData();
         refreshActivity();
@@ -2140,6 +2348,17 @@
 
     els.denyBtn?.addEventListener("click", () => {
       if (state.currentApprovalId) resolveApproval(state.currentApprovalId, false);
+    });
+
+    els.draftCloseBtn?.addEventListener("click", closeDraft);
+    els.draftStartBtn?.addEventListener("click", startDraft);
+    els.draftReviewBtn?.addEventListener("click", markReviewed);
+    els.draftModal?.addEventListener("click", (event) => {
+      if (event.target === els.draftModal) closeDraft();
+    });
+    document.addEventListener("keydown", (event) => {
+      // Escape closes the draft dialog only; the approval dialog stays blocking.
+      if (event.key === "Escape" && state.draftId !== null && !state.currentApprovalId) closeDraft();
     });
 
     document.addEventListener("visibilitychange", () => {

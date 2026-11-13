@@ -301,6 +301,44 @@ def create_app(injected_state: AppState | None = None) -> FastAPI:
             rows = [row for row in rows if row.get("course_id") == course_id]
         return {"assignments": rows}
 
+    # ---------- assignment drafts ----------
+
+    @app.get("/api/assignments/{assignment_id}/draft")
+    async def assignment_draft(
+        assignment_id: int, state: AppState = Depends(get_state)
+    ) -> dict[str, Any]:
+        """The agent's draft files for one assignment and their review state."""
+        try:
+            return state.assignment_draft(assignment_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/assignments/{assignment_id}/draft")
+    async def start_draft(
+        assignment_id: int, state: AppState = Depends(get_state)
+    ) -> dict[str, Any]:
+        """Ask the agent to draft every deliverable. Nothing is submitted to Moodle."""
+        try:
+            return await state.start_draft(assignment_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except BusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/assignments/{assignment_id}/review")
+    async def mark_reviewed(
+        assignment_id: int, state: AppState = Depends(get_state)
+    ) -> dict[str, Any]:
+        """Record the hash of every draft file as reviewed by the user."""
+        try:
+            return state.mark_draft_reviewed(assignment_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except BusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # ---------- files ----------
 
     @app.get("/api/workspace")

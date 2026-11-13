@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 
 import fitz  # PyMuPDF
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.security import sanitize_filename
-from tools.base import StrictArgs, ToolContext, ToolError, ToolRegistry, ToolSpec
+from tools.base import StrictArgs, ToolContext, ToolError, ToolRegistry, ToolSpec, clamp_int
 from tools.file_utils import relative_output, resolve_input_path, write_text_atomic
 from tools.workspace import assignment_workspace
 
@@ -25,6 +25,9 @@ class ReadPdfArgs(StrictArgs):
     save_text: bool = Field(
         default=True, description="Save extracted text under the assignment's extracted/ folder."
     )
+
+    _clamp_pages = field_validator("max_pages", mode="before")(clamp_int(1, 200))
+    _clamp_chars = field_validator("max_chars", mode="before")(clamp_int(1000, 60000))
 
 
 def _normalize_text(text: str) -> str:
