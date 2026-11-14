@@ -22,7 +22,7 @@ from app.security import PathJail
 from app.state import AppState
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-HEADERS = {"X-MoodleAI": "1"}
+HEADERS = {"X-Owlet": "1"}
 CHECKLIST = "## Deliverables\n- solution.py\n## Requirements\n- Sum two numbers -> solution.py"
 
 

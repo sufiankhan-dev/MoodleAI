@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     settings = load_settings()
     configure_logging(settings.log_level, settings.logs_dir)
-    logger.info("Starting MoodleAI on http://%s:%s", settings.app_host, settings.app_port)
+    logger.info("Starting Owlet on http://%s:%s", settings.app_host, settings.app_port)
     logger.info("Model: %s via %s", settings.ollama_model, settings.ollama_host)
     uvicorn.run(
         "app.api:app",

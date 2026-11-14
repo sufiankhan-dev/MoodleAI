@@ -1,6 +1,6 @@
-# MoodleAI — a local Moodle study assistant
+# Owlet — a local Moodle study assistant
 
-MoodleAI is a Windows desktop-style study assistant that drives a **visible Chrome
+Owlet is a Windows desktop-style study assistant that drives a **visible Chrome
 window** through your Moodle courses with Playwright, reads assignments and
 attachments, explains the work, and generates study files. The language model is
 **`qwen3:8b` running locally in Ollama**. There is no cloud AI, no remote server,
@@ -25,7 +25,7 @@ and no Moodle password storage.
 ### Install
 
 ```powershell
-cd C:\Users\DELL\Desktop\Agent\MoodleAI
+cd C:\Users\DELL\Desktop\Agent\Owlet
 
 # 1. Python dependencies
 python -m pip install -r requirements.txt
@@ -64,7 +64,7 @@ Next.js dashboard while shaving a whole toolchain off the install.
    the page at all and the connect call says so explicitly.
 3. Click **Connect**. A visible Chrome window opens with the persistent profile in
    `browser/profile`.
-4. Log in manually (including SSO/MFA). MoodleAI never sees, types, or stores your
+4. Log in manually (including SSO/MFA). Owlet never sees, types, or stores your
    Moodle account password.
 5. That's it. The dashboard polls Chrome every few seconds (or click **Check
    login**), and the first check that sees you logged in starts a **sync** on its
@@ -173,7 +173,7 @@ expect to fix things.
 
 Routes: `GET /api/assignments/{id}/draft` (files + status),
 `POST /api/assignments/{id}/draft` (start), `POST /api/assignments/{id}/review`
-(record hashes). The two POSTs need `X-MoodleAI: 1` like every mutation.
+(record hashes). The two POSTs need `X-Owlet: 1` like every mutation.
 
 ---
 
@@ -301,7 +301,7 @@ are required anywhere.
 ## Workspace layout
 
 ```
-MoodleAI/
+Owlet/
 ├── main.py                 # uvicorn entry point
 ├── app/
 │   ├── api.py              # FastAPI routes, SSE, CSRF/host guards
@@ -360,7 +360,7 @@ dialog; denying it leaves the original file untouched.
 
 - **Loopback only.** `APP_HOST` is validated at startup. Host and Origin headers
   are checked on every request.
-- **CSRF guard.** Every state-changing request needs `X-MoodleAI: 1`, which a
+- **CSRF guard.** Every state-changing request needs `X-Owlet: 1`, which a
   cross-site form cannot set.
 - **No Moodle account password handling.** Login is manual in Chrome. The app
   never asks for, reads, types, logs, or stores your Moodle credentials.
@@ -469,14 +469,14 @@ Tips:
 | Symptom | Fix |
 | --- | --- |
 | `Address already in use` | Change `APP_PORT` in `.env`, or stop the other process on 8765 |
-| Chrome profile “already in use” | Close the other Chrome window using `browser/profile`, or stop the other MoodleAI instance |
+| Chrome profile “already in use” | Close the other Chrome window using `browser/profile`, or stop the other Owlet instance |
 | Chrome not found | Install Chrome, or set `BROWSER_CHANNEL=msedge`. For bundled Chromium: `python -m playwright install chromium` |
 | Ollama pill says “offline” | Start the Ollama app / `ollama serve`, then check `ollama list` |
 | qwen3:8b missing | `ollama pull qwen3:8b` |
 | Login not detected | Finish login in the visible Chrome window, open the Moodle dashboard, then click **Check login** |
 | Page parsing looks wrong | Your theme may use unusual markup; ask the agent to read the visible page text, or open the page manually in Chrome |
 | PDF generation fails | Chrome must be available to Playwright (`BROWSER_CHANNEL=chrome`); PDFs render without JavaScript |
-| `403 Missing local request header` | You are calling the API manually; add `-H "X-MoodleAI: 1"` for POST/PUT/PATCH/DELETE |
+| `403 Missing local request header` | You are calling the API manually; add `-H "X-Owlet: 1"` for POST/PUT/PATCH/DELETE |
 | Browser tests are skipped | Set `$env:RUN_BROWSER_TESTS="1"` (they open a real Chrome window) |
 | Ollama tests are skipped | Set `$env:RUN_OLLAMA_TESTS="1"` after pulling the model |
 | First answer is very slow | Expected on CPU while the model loads; later turns reuse it via `OLLAMA_KEEP_ALIVE` |
@@ -487,7 +487,7 @@ Tips:
 
 Local data lives in:
 
-- `database/moodleai.db` — courses, assignments, conversations, activity, approvals
+- `database/owlet.db` — courses, assignments, conversations, activity, approvals
 - `config/app_state.json` — the Moodle URL only (never a password)
 - `browser/profile/` — Chrome session for your Moodle login
 - `workspace/` — course material and generated study files
@@ -504,14 +504,14 @@ is not advertised in the composer any more, but it works the same. A reset is
 refused while a sync is running. After a reset, press **Sync** to fetch
 everything again.
 
-It is also available as `POST /api/reset` with the usual `X-MoodleAI: 1` header,
+It is also available as `POST /api/reset` with the usual `X-Owlet: 1` header,
 and every open dashboard tab refreshes itself when a reset happens.
 
 To start completely fresh, stop the app first, then remove any of those paths.
 For example:
 
 ```powershell
-Remove-Item database\moodleai.db -Force
+Remove-Item database\owlet.db -Force
 Remove-Item config\app_state.json -Force
 Remove-Item browser\profile -Recurse -Force
 ```
@@ -540,5 +540,5 @@ back it up first if you want to keep your work.
 ## License / use
 
 Built as a local study assistant. You are responsible for following your
-institution's academic-integrity rules and Moodle terms of use. MoodleAI is a
+institution's academic-integrity rules and Moodle terms of use. Owlet is a
 reading and drafting aid; it does not submit work on your behalf.

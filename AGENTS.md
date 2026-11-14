@@ -1,4 +1,4 @@
-# AGENTS.md — MoodleAI working agreement
+# AGENTS.md — Owlet working agreement
 
 This file is the contract for every change made in this repository, by a human or
 an AI agent. Read it at the start of a session. If a request conflicts with a rule
@@ -25,7 +25,7 @@ from the owner — and even then, stop and confirm.
 | **Approval gate** | `app/state.py`, `tools/base.py` (`ToolContext.require_approval`) | Overwrites and refreshes pause for a click. Timeout = deny. Stop = deny pending. |
 | **No shell, no execution** | `tools/` | Generated code is written and never run. No `subprocess`, `os.system`, `eval`, `exec`. |
 | **Untrusted content** | `agent/prompts.py` | Page/PDF/file text is labelled data, never instructions. |
-| **CSRF header** | `app/api.py` (`local_only`) | Every POST/PUT/PATCH/DELETE needs `X-MoodleAI: 1`. |
+| **CSRF header** | `app/api.py` (`local_only`) | Every POST/PUT/PATCH/DELETE needs `X-Owlet: 1`. |
 | **No secret leakage** | `app/events.py`, `app/logging_setup.py` | Redact cookies, tokens, session keys; strip URL query strings in UI and logs. |
 
 `BROWSER_HEADLESS` also stays `false` — the owner must be able to watch what runs.
@@ -177,7 +177,7 @@ lowercase, imperative, no trailing period — see `git log`.
 
 1. Read routes from `AppState`; no business logic in `api.py`.
 2. State-changing routes are POST/PUT/PATCH/DELETE and therefore require the
-   `X-MoodleAI: 1` header — the middleware already enforces it, so the UI must send it.
+   `X-Owlet: 1` header — the middleware already enforces it, so the UI must send it.
 3. Return JSON-serializable dicts; errors via `HTTPException`.
 4. Keep `connect-src 'self'` in mind: the browser only talks to the same origin.
 5. Add an API test; update the README if it is user-facing.
@@ -191,7 +191,7 @@ lowercase, imperative, no trailing period — see `git log`.
   driven by `data-theme` on `<html>`. Stay inside those tokens; no new colour
   literals and no external fonts or CDNs (`default-src 'self'`).
 - `app.js` is the only place `fetch` and `EventSource` are constructed. Its `api()`
-  helper adds `X-MoodleAI: 1` to every POST/PUT/PATCH/DELETE.
+  helper adds `X-Owlet: 1` to every POST/PUT/PATCH/DELETE.
 - Live updates use `EventSource("/api/events")`; a reconnect re-reads `/api/state`.
 - Model output is untrusted: Markdown is escaped before the allow-listed formatter
   runs, and links are limited to `http(s)`.
@@ -228,7 +228,7 @@ treatment, not the framework. Concretely:
 
 1. **One process, same origin.** FastAPI serves `/`, `/styles.css`, `/app.js`.
    No dev server, no proxy, no CORS, no `DASHBOARD_URL`.
-2. **`X-MoodleAI: 1` on every mutation**, set in one place in `app.js`.
+2. **`X-Owlet: 1` on every mutation**, set in one place in `app.js`.
 3. **SSE streams directly** from `/api/events`; reconnect re-reads `/api/state`.
 4. **No secrets in the client.** No tokens, no Moodle URLs with query strings.
 5. **Approvals keep their semantics.** Timeout denies, Stop denies pending, the

@@ -1,7 +1,7 @@
-/* MoodleAI dashboard.
+/* Owlet dashboard.
  *
  * Talks only to the local FastAPI server on the same origin. All state-changing
- * calls carry the X-MoodleAI header required by the backend's CSRF guard.
+ * calls carry the X-Owlet header required by the backend's CSRF guard.
  * Rendered model output is treated as untrusted: Markdown is escaped before a
  * small allow-listed formatter runs, and links are limited to http(s).
  */
@@ -10,7 +10,7 @@
 
   // ---------- theme (before anything paints) ----------
 
-  const THEME_KEY = "moodleai-theme";
+  const THEME_KEY = "owlet-theme";
   const root = document.documentElement;
   const media = window.matchMedia("(prefers-color-scheme: dark)");
 
@@ -250,7 +250,7 @@
     const method = (options.method || "GET").toUpperCase();
     const headers = {};
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
-    if (method !== "GET") headers["X-MoodleAI"] = "1";
+    if (method !== "GET") headers["X-Owlet"] = "1";
 
     let response;
     try {
@@ -262,7 +262,7 @@
       });
     } catch (error) {
       throw new Error(
-        "Cannot reach the local MoodleAI server. Is `python main.py` still running?"
+        "Cannot reach the local Owlet server. Is `python main.py` still running?"
       );
     }
 
@@ -487,7 +487,7 @@
     const author = document.createElement("div");
     author.className = "msg-author";
     author.textContent =
-      role === "user" ? "You" : options.error ? "MoodleAI · error" : "MoodleAI";
+      role === "user" ? "You" : options.error ? "Owlet · error" : "Owlet";
     main.appendChild(author);
 
     const bubble = document.createElement("div");
@@ -631,7 +631,7 @@
     if (els.messageInput) {
       els.messageInput.placeholder = state.running
         ? "The agent is working… press Stop to interrupt"
-        : "Ask MoodleAI…";
+        : "Ask Owlet…";
     }
   }
 
@@ -668,7 +668,7 @@
 
   // Per-viewer convenience only: a blocked or empty storage just means every
   // card starts in its default state.
-  const CARDS_KEY = "moodleai-collapsed";
+  const CARDS_KEY = "owlet-collapsed";
   const DEFAULT_COLLAPSED = { activity: true };
 
   function loadCardPrefs() {
@@ -1512,7 +1512,7 @@
           break;
         case "login_required":
           hint.textContent =
-            "Chrome is open. Log in to Moodle manually (including SSO/MFA). MoodleAI never sees or stores your password.";
+            "Chrome is open. Log in to Moodle manually (including SSO/MFA). Owlet never sees or stores your password.";
           hint.classList.add("warn");
           break;
         case "starting":

@@ -12,7 +12,7 @@ from datetime import date
 def build_system_prompt(*, tool_names: list[str], workspace_root: str) -> str:
     today = date.today().isoformat()
     tools = ", ".join(tool_names)
-    return f"""You are MoodleAI, a local university study assistant running on the user's Windows laptop.
+    return f"""You are Owlet, a local university study assistant running on the user's Windows laptop.
 The model is qwen3:8b served by Ollama on localhost. You control a visible Chrome window that the user has logged into their university Moodle manually. The user can see every page you open.
 
 Today's date: {today}

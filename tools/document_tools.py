@@ -426,7 +426,7 @@ async def create_word_document(ctx: ToolContext, args: CreateWordArgs) -> dict[s
 
     document = Document()
     document.core_properties.title = args.title
-    document.core_properties.author = "MoodleAI (local)"
+    document.core_properties.author = "Owlet (local)"
     document.add_heading(args.title, level=0)
     _markdown_to_docx(document, args.content)
     target.parent.mkdir(parents=True, exist_ok=True)

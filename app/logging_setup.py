@@ -30,7 +30,7 @@ def configure_logging(log_level: str, logs_dir: Path) -> None:
     console.setFormatter(formatter)
 
     file_handler = RotatingFileHandler(
-        logs_dir / "moodleai.log",
+        logs_dir / "owlet.log",
         maxBytes=2_000_000,
         backupCount=3,
         encoding="utf-8",

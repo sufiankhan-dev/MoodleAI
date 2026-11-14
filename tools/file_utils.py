@@ -28,7 +28,7 @@ def resolve_input_path(ctx: ToolContext, raw: str) -> tuple[str, Path]:
                 if not resolved.is_file():
                     raise ToolError(f"File does not exist: {raw}")
                 return root_name, resolved
-        raise ToolError("That path is outside the MoodleAI workspace and generated folders.")
+        raise ToolError("That path is outside the Owlet workspace and generated folders.")
 
     for root_name in ("workspace", "generated"):
         try:

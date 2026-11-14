@@ -201,7 +201,7 @@ class BrowserSession:
                 if "ProcessSingleton" in message or "already in use" in message.lower():
                     friendly = (
                         "This browser profile is already open in another Chrome window "
-                        "or another MoodleAI instance. Close it, then reconnect."
+                        "or another Owlet instance. Close it, then reconnect."
                     )
                 elif "Executable doesn't exist" in message:
                     friendly = (

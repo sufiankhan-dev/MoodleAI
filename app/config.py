@@ -112,7 +112,7 @@ class Settings:
 
     @property
     def database_path(self) -> Path:
-        return self.database_dir / "moodleai.db"
+        return self.database_dir / "owlet.db"
 
     @property
     def logs_dir(self) -> Path:

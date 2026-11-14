@@ -1,4 +1,4 @@
-"""FastAPI backend for the local MoodleAI dashboard.
+"""FastAPI backend for the local Owlet dashboard.
 
 Binds to loopback only, rejects non-local Host headers, and requires a custom
 header on state-changing requests to block cross-site form posts (CSRF).
@@ -45,7 +45,7 @@ class ApprovalDecision(BaseModel):
 
 
 def get_state(request: Request) -> AppState:
-    state = getattr(request.app.state, "moodleai", None)
+    state = getattr(request.app.state, "owlet", None)
     if state is None:
         raise HTTPException(status_code=503, detail="Application is starting.")
     return state
@@ -79,15 +79,15 @@ def create_app(injected_state: AppState | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         state = injected_state or AppState(load_settings())
-        application.state.moodleai = state
-        logger.info("MoodleAI ready on http://%s:%s", state.settings.app_host, state.settings.app_port)
+        application.state.owlet = state
+        logger.info("Owlet ready on http://%s:%s", state.settings.app_host, state.settings.app_port)
         try:
             yield
         finally:
             await state.shutdown()
 
     app = FastAPI(
-        title="MoodleAI",
+        title="Owlet",
         version=API_VERSION,
         docs_url="/docs",
         redoc_url=None,
@@ -108,7 +108,7 @@ def create_app(injected_state: AppState | None = None) -> FastAPI:
             if origin_host not in {"127.0.0.1", "localhost", "::1"}:
                 return JSONResponse({"detail": "Cross-origin requests are blocked."}, 403)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            if request.headers.get("x-moodleai") != "1":
+            if request.headers.get("x-owlet") != "1":
                 return JSONResponse({"detail": "Missing local request header."}, 403)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -124,7 +124,7 @@ def create_app(injected_state: AppState | None = None) -> FastAPI:
     # ---------- static dashboard ----------
 
     def _ui_file(name: str, media_type: str) -> FileResponse:
-        state = app.state.moodleai
+        state = app.state.owlet
         path = state.settings.ui_dir / name
         if not path.exists():
             raise HTTPException(status_code=500, detail=f"UI file missing: {name}")
@@ -150,7 +150,7 @@ def create_app(injected_state: AppState | None = None) -> FastAPI:
 
     @app.get("/api/version")
     async def version() -> dict[str, str]:
-        return {"version": API_VERSION, "app": "MoodleAI"}
+        return {"version": API_VERSION, "app": "Owlet"}
 
     @app.get("/api/health")
     async def health(state: AppState = Depends(get_state)) -> dict[str, Any]:

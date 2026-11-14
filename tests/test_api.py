@@ -96,7 +96,7 @@ def test_ui_assets_are_served_with_security_headers(api) -> None:
     index = client.get("/")
     assert index.status_code == 200
     assert "text/html" in index.headers["content-type"]
-    assert "MoodleAI" in index.text
+    assert "Owlet" in index.text
 
     css = client.get("/styles.css")
     assert css.status_code == 200
@@ -138,7 +138,7 @@ def test_network_credentials_are_transient_only(api) -> None:
     # cards are collapsed, each under its own fixed key.
     keys = re.findall(r"localStorage\.setItem\(\s*([A-Za-z_]+)", script)
     assert sorted(keys) == ["CARDS_KEY", "THEME_KEY"]
-    assert 'const CARDS_KEY = "moodleai-collapsed"' in script
+    assert 'const CARDS_KEY = "owlet-collapsed"' in script
     assert "sessionStorage" not in script
 
 
@@ -179,7 +179,7 @@ def test_mutating_requests_require_local_header(api) -> None:
     assert blocked.status_code == 403
     assert "header" in blocked.json()["detail"].lower()
 
-    allowed = client.post("/api/agent/stop", json={}, headers={"X-MoodleAI": "1"})
+    allowed = client.post("/api/agent/stop", json={}, headers={"X-Owlet": "1"})
     assert allowed.status_code == 200
     assert allowed.json()["ok"] is False
 
@@ -190,7 +190,7 @@ def test_sync_endpoint_asks_for_a_connection_instead_of_failing_silently(api) ->
     blocked = client.post("/api/sync", json={})
     assert blocked.status_code == 403
 
-    offline = client.post("/api/sync", json={}, headers={"X-MoodleAI": "1"})
+    offline = client.post("/api/sync", json={}, headers={"X-Owlet": "1"})
     assert offline.status_code == 400
     assert "connect" in offline.json()["detail"].lower()
     assert state.sync_state()["running"] is False
@@ -214,7 +214,7 @@ def test_non_local_host_and_origin_are_rejected(api) -> None:
 
     local = client.get("/api/version")
     assert local.status_code == 200
-    assert local.json()["app"] == "MoodleAI"
+    assert local.json()["app"] == "Owlet"
 
 
 def test_ipv6_loopback_host_is_accepted(api) -> None:
@@ -223,7 +223,7 @@ def test_ipv6_loopback_host_is_accepted(api) -> None:
     # Browsers send bracket-and-port hosts; naive colon splitting broke IPv6.
     ipv6 = client.get("/api/version", headers={"host": "[::1]:8765"})
     assert ipv6.status_code == 200
-    assert ipv6.json()["app"] == "MoodleAI"
+    assert ipv6.json()["app"] == "Owlet"
 
     bare = client.get("/api/version", headers={"host": "::1"})
     assert bare.status_code == 200
@@ -323,7 +323,7 @@ def test_reset_endpoint_clears_data_and_keeps_login(api) -> None:
     blocked = client.post("/api/reset", json={})
     assert blocked.status_code == 403
 
-    response = client.post("/api/reset", json={}, headers={"X-MoodleAI": "1"})
+    response = client.post("/api/reset", json={}, headers={"X-Owlet": "1"})
     assert response.status_code == 200
     summary = response.json()
     assert summary["ok"] is True
@@ -355,7 +355,7 @@ def test_approval_and_conversation_errors_are_clear(api) -> None:
     unknown = client.post(
         "/api/approvals/doesnotexist",
         json={"approved": True},
-        headers={"X-MoodleAI": "1"},
+        headers={"X-Owlet": "1"},
     )
     assert unknown.status_code == 404
 
@@ -365,14 +365,14 @@ def test_approval_and_conversation_errors_are_clear(api) -> None:
     blank = client.post(
         "/api/chat",
         json={"message": "   "},
-        headers={"X-MoodleAI": "1"},
+        headers={"X-Owlet": "1"},
     )
     assert blank.status_code == 400
 
     empty = client.post(
         "/api/chat",
         json={"message": ""},
-        headers={"X-MoodleAI": "1"},
+        headers={"X-Owlet": "1"},
     )
     assert empty.status_code == 422
 
@@ -407,7 +407,7 @@ def test_chat_turn_completes_and_persists(api) -> None:
     response = client.post(
         "/api/chat",
         json={"message": "Say hello"},
-        headers={"X-MoodleAI": "1"},
+        headers={"X-Owlet": "1"},
     )
     assert response.status_code == 200
     body = response.json()
@@ -429,7 +429,7 @@ def test_chat_turn_completes_and_persists(api) -> None:
     second = client.post(
         "/api/chat",
         json={"message": "Again", "conversation_id": conversation_id},
-        headers={"X-MoodleAI": "1"},
+        headers={"X-Owlet": "1"},
     )
     assert second.status_code == 200
     assert second.json()["conversation_id"] == conversation_id
